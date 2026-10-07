@@ -11,7 +11,8 @@ from paystream.messaging.topology import DEAD_LETTER_EXCHANGE, DEAD_LETTER_KEY, 
 logger = logging.getLogger(__name__)
 
 ATTEMPT_HEADER = "x-attempt"
-_BROKER_HEADER_PREFIXES = ("x-death", "x-first-death", "x-last-death")
+# RabbitMQ's own bookkeeping: the dead-letter history and the redelivery counters of a quorum queue.
+_BROKER_HEADER_PREFIXES = ("x-death", "x-first-death", "x-last-death", "x-delivery-count", "x-acquired-count")
 
 
 def next_retry_delay_ms(attempt: int, delays_ms: Sequence[int]) -> int | None:
@@ -20,7 +21,7 @@ def next_retry_delay_ms(attempt: int, delays_ms: Sequence[int]) -> int | None:
 
 
 def _carry(headers: Mapping[str, Any]) -> dict[str, Any]:
-    """Our headers survive a hop; RabbitMQ's own dead-letter bookkeeping does not."""
+    """Our headers survive a hop; RabbitMQ's own bookkeeping does not: it would be stale on the next queue."""
     return {k: v for k, v in headers.items() if not k.startswith(_BROKER_HEADER_PREFIXES)}
 
 

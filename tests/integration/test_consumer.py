@@ -19,6 +19,7 @@ from paystream.domain.events import PAYMENT_CREATED, EventEnvelope
 from paystream.domain.payment import Currency, PaymentStatus
 from paystream.gateway.simulated import ChargeResult
 from paystream.messaging.broker import build_broker
+from paystream.messaging.retry import RetryPublisher
 from paystream.messaging.topology import declare_topology
 from paystream.repositories.payments import PaymentRepository
 from paystream.services.outbox_relay import OutboxRelay
@@ -48,7 +49,8 @@ async def channel_to(url: str) -> AsyncIterator[aio_pika.abc.AbstractChannel]:
 
 async def purge_queues(url: str) -> None:
     async with channel_to(url) as channel:
-        for name in QUEUES:
+        # Retry tiers before payments.new: a message parked in a tier could otherwise expire into it after its purge.
+        for name in reversed(QUEUES):
             await (await channel.declare_queue(name, passive=True)).purge()
 
 
@@ -91,6 +93,12 @@ async def publish_raw(
             body, message_id=message_id, correlation_id=correlation_id, headers=headers, content_type=content_type
         )
         await exchange.publish(message, routing_key="payment.created")
+
+
+def event_bytes(**data: Any) -> bytes:
+    """A payment.created envelope as an outside producer would send it, with `data` as given."""
+    event = EventEnvelope(event_id=uuid7(), event_type=PAYMENT_CREATED, occurred_at=datetime.now(UTC), data=data)
+    return event.model_dump_json().encode()
 
 
 @pytest.fixture
@@ -200,8 +208,18 @@ async def test_webhook_retries_with_backoff_then_dead_letters(db: Database, brok
         (b"[1, 2, 3]", None),
         (b"{not json", "application/json"),  # claims to be JSON: FastStream's own decoder raises before our handler
         (b"\xff\xfe", "text/plain"),  # claims to be text: so does its decoder
+        (b"[" * 100_000, None),  # json.loads dies with a RecursionError, which nobody upstream catches either
+        (b"[" * 100_000, "application/json"),
     ],
-    ids=["not-an-event", "not-json", "not-an-object", "undecodable-json", "undecodable-text"],
+    ids=[
+        "not-an-event",
+        "not-json",
+        "not-an-object",
+        "undecodable-json",
+        "undecodable-text",
+        "too-deep",
+        "too-deep-json",
+    ],
 )
 async def test_invalid_message_goes_to_dlq(broker_settings: Settings, body: bytes, content_type: str | None) -> None:
     url = broker_settings.rabbitmq_url
@@ -214,24 +232,43 @@ async def test_invalid_message_goes_to_dlq(broker_settings: Settings, body: byte
     [message] = await dead_letters(url)
     assert (message.message_id, message.correlation_id) == ("bad-1", "corr-1")
     assert message.headers["x-dead-reason"] == "invalid_message"
+    assert message.headers["x-attempt"] == 1  # the first delivery: no hop through a retry tier
 
 
 async def test_malformed_event_data_goes_straight_to_dlq(broker_settings: Settings) -> None:
     url = broker_settings.rabbitmq_url
-    # A valid envelope whose `data` lacks the payment_id: the processor calls it a permanent failure.
-    event = EventEnvelope(
-        event_id=uuid7(), event_type=PAYMENT_CREATED, occurred_at=datetime.now(UTC), data={"amount": "10.00"}
-    )
     async with httpx.AsyncClient() as http:
         app = build_consumer(broker_settings, gateway=AlwaysSucceeds(), http_client=http)
         async with TestApp(app):
-            await publish_raw(url, event.model_dump_json().encode(), message_id="bad-2")
+            # A valid envelope whose `data` lacks the payment_id: the processor calls it a permanent failure.
+            await publish_raw(url, event_bytes(amount="10.00"), message_id="bad-2")
             await wait_for(lambda: _dead_letters_at_least(url, 1))
     assert await queue_depths(url) == depths(dead=1)
     [message] = await dead_letters(url)
     assert message.headers["x-dead-reason"] == "invalid_event"
     assert message.headers["x-attempt"] == 1  # no hop through a retry tier
     assert "x-last-error" not in message.headers  # which would have stamped one
+
+
+@pytest.mark.parametrize(
+    "attempt",
+    ["abc", None, [1, 2]],  # int() fails with a ValueError, and with a TypeError for a void and for an array
+    ids=["text", "void", "array"],
+)
+async def test_unreadable_attempt_header_goes_straight_to_dlq(broker_settings: Settings, attempt: Any) -> None:
+    url = broker_settings.rabbitmq_url
+    # The event itself is fine (the processor would call it an unknown payment, a different dead-letter reason),
+    # so the header is the only thing that can make it invalid.
+    body = event_bytes(payment_id=str(uuid7()), amount="10.00", currency="EUR", webhook_url=None)
+    async with httpx.AsyncClient() as http:
+        app = build_consumer(broker_settings, gateway=AlwaysSucceeds(), http_client=http)
+        async with TestApp(app):
+            await publish_raw(url, body, message_id="bad-3", headers={"x-attempt": attempt})
+            await wait_for(lambda: _dead_letters_at_least(url, 1))
+    assert await queue_depths(url) == depths(dead=1)
+    [message] = await dead_letters(url)
+    assert message.headers["x-dead-reason"] == "invalid_message"
+    assert str(message.headers["x-error"]).startswith("unreadable x-attempt header")  # the bad value is quoted there
 
 
 async def test_messages_are_processed_concurrently(db: Database, broker_settings: Settings) -> None:
@@ -262,20 +299,25 @@ async def test_crash_loop_is_dead_lettered_at_the_delivery_limit(broker_settings
     assert message.headers["x-death"][0]["reason"] == "delivery_limit"
 
 
-async def test_message_the_handler_cannot_route_is_requeued_until_the_delivery_limit(
-    broker_settings: Settings,
+async def test_message_that_cannot_be_dead_lettered_is_requeued_until_the_delivery_limit(
+    broker_settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    async def broker_is_down(self: RetryPublisher, **_: Any) -> None:
+        raise ConnectionError("broker is down")
+
+    monkeypatch.setattr(RetryPublisher, "dead_letter", broker_is_down)
     url = broker_settings.rabbitmq_url
     async with httpx.AsyncClient() as http:
         app = build_consumer(broker_settings, gateway=AlwaysSucceeds(), http_client=http)
         async with TestApp(app):
-            # An attempt counter that is not a number fails before the message can be routed anywhere.
-            await publish_raw(url, b"{}", message_id="loop-2", headers={"x-attempt": "abc"})
+            await publish_raw(url, b"not json", message_id="loop-2")  # invalid, so the consumer wants to dead-letter it
             await wait_for(lambda: _dead_letters_at_least(url, 1))
     assert await queue_depths(url) == depths(dead=1)
     [message] = await dead_letters(url)
     assert message.message_id == "loop-2"
-    assert message.headers["x-death"][0]["reason"] == "delivery_limit"  # requeued by reject, which the limit counts
+    # The broker gave up on it, not the consumer: every requeue was a reject, which the limit counts.
+    assert message.headers["x-death"][0]["reason"] == "delivery_limit"
+    assert "x-dead-reason" not in message.headers
 
 
 async def test_consumer_refuses_to_start_without_a_signing_secret(broker_settings: Settings) -> None:

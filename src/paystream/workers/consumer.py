@@ -7,7 +7,6 @@ import httpx
 from faststream import AckPolicy, FastStream
 from faststream.message import StreamMessage
 from faststream.rabbit.annotations import RabbitMessage
-from pydantic import ValidationError
 
 from paystream.core.config import Settings, get_settings
 from paystream.db.database import Database
@@ -40,15 +39,25 @@ class DeliveredMessage(Protocol):
 async def decode_or_raw(
     message: StreamMessage[Any], original_decoder: Callable[[StreamMessage[Any]], Awaitable[Any]]
 ) -> Any:
-    """A payload that cannot be decoded (invalid JSON under a JSON content type) still has to be settled.
+    """A payload that cannot be decoded still has to be settled.
 
-    If FastStream's decoder raised, the message would stay unacked. Its raw bytes go to handle_delivery instead,
-    which dead-letters them as an invalid message.
+    Invalid JSON under a JSON content type, bytes that are not UTF-8, JSON nested deeply enough to overflow the
+    parser's stack: whatever the decoder raises, FastStream would leave the message unacked. Its raw bytes go to
+    handle_delivery instead, which dead-letters them as an invalid message.
     """
     try:
         return await original_decoder(message)
-    except ValueError:  # JSONDecodeError and UnicodeDecodeError both derive from it
+    except Exception:  # noqa: BLE001 — a decoder failure of any kind means the payload is poison
         return message.body
+
+
+def _attempt_number(headers: Mapping[str, Any]) -> int:
+    """1-based number of the delivery attempt; a message that never failed carries no header."""
+    value = headers.get(ATTEMPT_HEADER, 1)
+    try:
+        return int(value)
+    except TypeError, ValueError:
+        raise ValueError(f"unreadable {ATTEMPT_HEADER} header: {value!r:.100}") from None
 
 
 async def handle_delivery(
@@ -63,16 +72,17 @@ async def handle_delivery(
     closes."""
     try:
         headers = dict(message.headers or {})
-        attempt = int(headers.get(ATTEMPT_HEADER, 1))
         route: dict[str, Any] = {
             "body": body,
             "message_id": message.message_id or "",
             "correlation_id": message.correlation_id,
             "headers": headers,
         }
+        attempt = 1  # stays 1 if the header turns out to be unreadable
         try:
+            attempt = _attempt_number(headers)
             event = EventEnvelope.model_validate(body)
-        except ValidationError as exc:
+        except ValueError as exc:  # an unreadable header, or pydantic's ValidationError (a ValueError as well)
             await retries.dead_letter(**route, reason="invalid_message", error=str(exc), attempt=attempt)
         else:
             try:
@@ -84,9 +94,9 @@ async def handle_delivery(
             else:
                 logger.info("message %s attempt %d processed", message.message_id, attempt)
     except Exception:
-        # Could not even route the message (broker trouble, unreadable headers). Give it back to the queue:
-        # a reject counts toward the quorum queue's x-delivery-limit (a nack does not), which dead-letters it
-        # if this keeps happening.
+        # Could not even route the message (the broker refused the retry or dead-letter publish). Give it back to
+        # the queue: a reject counts toward the quorum queue's x-delivery-limit (a nack does not), which
+        # dead-letters it if this keeps happening.
         logger.exception("could not route message %s, requeueing", message.message_id)
         await message.reject(requeue=True)
     else:
