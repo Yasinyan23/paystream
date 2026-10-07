@@ -4,7 +4,7 @@ x-app: &app
   build: .
   image: paystream:local
   restart: unless-stopped
-  environment: &app-env
+  environment:
     DATABASE_URL: postgresql+asyncpg://paystream:paystream@postgres:5432/paystream
     RABBITMQ_URL: amqp://paystream:paystream@rabbitmq:5672/
     API_KEYS: ${API_KEYS:-dev-api-key}
@@ -17,7 +17,7 @@ x-app: &app
     RETRY_BASE_DELAY_MS: ${RETRY_BASE_DELAY_MS:-2000}
     CONSUMER_PREFETCH: ${CONSUMER_PREFETCH:-10}
     OUTBOX_POLL_INTERVAL: ${OUTBOX_POLL_INTERVAL:-1.0}
-  depends_on: &app-deps
+  depends_on:
     postgres:
       condition: service_healthy
     rabbitmq:
@@ -36,13 +36,17 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U paystream -d paystream"]
+      # -h forces TCP: the first boot runs a temporary server that listens on the unix socket only.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U paystream -d paystream"]
       interval: 3s
       timeout: 3s
       retries: 20
 
   rabbitmq:
     image: rabbitmq:4-management-alpine
+    # The node name, and with it the data directory inside the volume, comes from the hostname.
+    # Without a fixed one, a recreated container boots an empty broker and loses queued messages.
+    hostname: rabbitmq
     restart: unless-stopped
     environment:
       RABBITMQ_DEFAULT_USER: paystream
@@ -68,7 +72,7 @@ services:
   api:
     <<: *app
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=3)"]
       interval: 5s

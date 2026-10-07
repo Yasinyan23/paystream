@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
 FROM python:3.14-slim AS builder
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+# Keep in step with uv_build in pyproject.toml (>=0.12.3,<0.13.0).
+COPY --from=ghcr.io/astral-sh/uv:0.12 /uv /bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=0
 WORKDIR /app
 RUN --mount=type=cache,target=/root/.cache/uv \
