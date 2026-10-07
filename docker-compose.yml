@@ -1,0 +1,88 @@
+name: paystream
+
+x-app: &app
+  build: .
+  image: paystream:local
+  restart: unless-stopped
+  environment: &app-env
+    DATABASE_URL: postgresql+asyncpg://paystream:paystream@postgres:5432/paystream
+    RABBITMQ_URL: amqp://paystream:paystream@rabbitmq:5672/
+    API_KEYS: ${API_KEYS:-dev-api-key}
+    WEBHOOK_SIGNING_SECRET: ${WEBHOOK_SIGNING_SECRET:-whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw}
+    WEBHOOK_ALLOWED_HOSTS: ${WEBHOOK_ALLOWED_HOSTS:-}
+    GATEWAY_MIN_DELAY: ${GATEWAY_MIN_DELAY:-2.0}
+    GATEWAY_MAX_DELAY: ${GATEWAY_MAX_DELAY:-5.0}
+    GATEWAY_SUCCESS_RATE: ${GATEWAY_SUCCESS_RATE:-0.9}
+    RETRY_MAX_ATTEMPTS: ${RETRY_MAX_ATTEMPTS:-3}
+    RETRY_BASE_DELAY_MS: ${RETRY_BASE_DELAY_MS:-2000}
+    CONSUMER_PREFETCH: ${CONSUMER_PREFETCH:-10}
+    OUTBOX_POLL_INTERVAL: ${OUTBOX_POLL_INTERVAL:-1.0}
+  depends_on: &app-deps
+    postgres:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: paystream
+      POSTGRES_USER: paystream
+      POSTGRES_PASSWORD: paystream
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paystream -d paystream"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: paystream
+      RABBITMQ_DEFAULT_PASS: paystream
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    ports:
+      - "127.0.0.1:15672:15672"
+
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  outbox-relay:
+    <<: *app
+    command: ["python", "-m", "paystream.workers.relay"]
+
+  consumer:
+    <<: *app
+    command: ["python", "-m", "paystream.workers.consumer"]
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
