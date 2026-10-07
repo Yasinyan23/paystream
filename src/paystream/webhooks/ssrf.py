@@ -32,6 +32,9 @@ async def ensure_public_url(
     try:
         parsed = httpx.URL(url)
         host = parsed.host  # decoding an xn-- host happens here and can fail too
+        # `host` is the decoded Unicode form. getaddrinfo would re-encode it with the stdlib's IDNA 2003 codec
+        # (ß becomes ss), while httpx connects to the IDNA 2008 A-label: check the name that is actually dialled.
+        connect_host = parsed.raw_host.decode("ascii")
     except (httpx.InvalidURL, UnicodeError) as exc:
         raise UnsafeWebhookURLError(f"invalid URL: {exc}") from exc
     if parsed.scheme not in {"http", "https"}:
@@ -42,7 +45,7 @@ async def ensure_public_url(
         return
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     try:
-        addresses = await (resolver or _system_resolver)(host, port)
+        addresses = await (resolver or _system_resolver)(connect_host, port)
     except UnicodeError as exc:  # an empty or over-long DNS label (the API accepts them) is a ValueError, not OSError
         raise UnsafeWebhookURLError(f"{host!r} is not a valid DNS name") from exc
     for address in addresses:

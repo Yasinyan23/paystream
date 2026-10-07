@@ -1,4 +1,6 @@
+import asyncio
 import json
+from collections.abc import AsyncIterator
 
 import httpx
 import pytest
@@ -31,12 +33,28 @@ def test_verify_accepts_valid_signature_among_several() -> None:
     [
         (b'{"test": 1}', str(TIMESTAMP), TIMESTAMP),  # tampered body
         (BODY, str(TIMESTAMP), TIMESTAMP + 301),  # replayed too late
+        (BODY, str(TIMESTAMP), TIMESTAMP - 301),  # stamped in the future
         (BODY, "not-a-number", TIMESTAMP),
     ],
 )
 def test_verify_rejects(body: bytes, timestamp: str, now: float) -> None:
     with pytest.raises(InvalidSignatureError):
         verify(SECRET, msg_id=MSG_ID, timestamp=timestamp, signature_header=SIGNATURE, body=body, now=now)
+
+
+# Header values come from the network: whatever they hold, the only failure is InvalidSignatureError.
+@pytest.mark.parametrize(
+    ("msg_id", "timestamp", "signature_header", "now"),
+    [
+        pytest.param(MSG_ID, str(TIMESTAMP), "v1,é", TIMESTAMP, id="non-ascii-signature"),
+        pytest.param(MSG_ID, str(TIMESTAMP), "v1,\ud800", TIMESTAMP, id="lone-surrogate-signature"),
+        pytest.param("\ud800", str(TIMESTAMP), SIGNATURE, TIMESTAMP, id="lone-surrogate-msg-id"),
+        pytest.param(MSG_ID, "9" * 400, SIGNATURE, None, id="timestamp-beyond-float-range"),
+    ],
+)
+def test_verify_rejects_hostile_headers(msg_id: str, timestamp: str, signature_header: str, now: float | None) -> None:
+    with pytest.raises(InvalidSignatureError):
+        verify(SECRET, msg_id=msg_id, timestamp=timestamp, signature_header=signature_header, body=BODY, now=now)
 
 
 def test_generated_secret_roundtrip() -> None:
@@ -75,6 +93,19 @@ async def test_scheme_and_allowlist() -> None:
     with pytest.raises(UnsafeWebhookURLError, match="scheme"):
         await ensure_public_url("ftp://example.com/x")
     await ensure_public_url("http://webhook-sink:8080/hook", allowed_hosts=["webhook-sink"])  # no DNS needed
+
+
+async def test_resolver_gets_the_name_httpx_connects_to() -> None:
+    seen: list[str] = []
+
+    async def spy(host: str, port: int) -> list[str]:
+        seen.append(host)
+        return ["93.184.215.14"]
+
+    # The stdlib's IDNA 2003 codec would turn the decoded "faß" into "fass" (a name the attacker may control
+    # separately); httpx connects to the IDNA 2008 A-label, and that is the name that has to be checked.
+    await ensure_public_url("https://faß.example/", resolver=spy)
+    assert seen == ["xn--fa-hia.example"]
 
 
 def make_sender(client: httpx.AsyncClient) -> WebhookSender:
@@ -130,6 +161,52 @@ async def test_redirects_are_not_followed() -> None:
     async with build_http_client(Settings(_env_file=None)) as client:
         result = await make_sender(client).deliver("https://hooks.test/pay", event_id="evt_1", payload={})
     assert (result.ok, result.status_code, result.permanent, route.call_count) == (False, 302, False, 1)
+
+
+async def test_http_client_ignores_proxy_environment() -> None:
+    # A proxy from HTTP(S)_PROXY would resolve and connect on its own, past the SSRF check.
+    async with build_http_client(Settings(_env_file=None)) as client:
+        assert client.trust_env is False
+
+
+@respx.mock
+async def test_error_body_is_read_only_up_to_the_cap() -> None:
+    served = 0
+
+    async def endless() -> AsyncIterator[bytes]:
+        nonlocal served
+        for _ in range(1000):
+            served += 1
+            yield b"x" * 512
+
+    respx.post("https://hooks.test/pay").mock(return_value=httpx.Response(500, content=endless()))
+    async with httpx.AsyncClient() as client:
+        result = await make_sender(client).deliver("https://hooks.test/pay", event_id="evt_1", payload={})
+    assert result.error == "HTTP 500: " + "x" * 1014  # the error text is capped at 1024 characters
+    assert served <= 3  # and the receiver's stream is abandoned at the cap, not drained
+
+
+@respx.mock
+async def test_error_text_never_contains_nul() -> None:
+    respx.post("https://hooks.test/pay").mock(return_value=httpx.Response(500, content=b"bad\x00gateway"))
+    async with httpx.AsyncClient() as client:
+        result = await make_sender(client).deliver("https://hooks.test/pay", event_id="evt_1", payload={})
+    assert result.error == "HTTP 500: badgateway"  # Postgres text columns reject NUL
+
+
+@respx.mock
+async def test_slow_drip_is_cut_off_by_the_overall_deadline() -> None:
+    async def drip() -> AsyncIterator[bytes]:
+        for _ in range(100):  # every read is quick, the response as a whole is not
+            await asyncio.sleep(0.05)
+            yield b"."
+
+    respx.post("https://hooks.test/pay").mock(return_value=httpx.Response(500, content=drip()))
+    async with httpx.AsyncClient(timeout=httpx.Timeout(0.05)) as client:  # budget: connect + read = 0.1 s
+        result = await make_sender(client).deliver("https://hooks.test/pay", event_id="evt_1", payload={})
+    assert (result.ok, result.status_code, result.permanent) == (False, None, False)
+    assert result.error is not None
+    assert result.error.startswith("TimeoutError")
 
 
 async def test_unsafe_url_is_permanent_and_never_sent() -> None:

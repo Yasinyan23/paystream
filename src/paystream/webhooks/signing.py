@@ -19,7 +19,8 @@ def _key(secret: str) -> bytes:
 
 
 def sign(secret: str, *, msg_id: str, timestamp: int, body: bytes) -> str:
-    signed_content = f"{msg_id}.{timestamp}.".encode() + body
+    # surrogatepass: verify() feeds network text through here, and encoding it must never raise.
+    signed_content = f"{msg_id}.{timestamp}.".encode(errors="surrogatepass") + body
     digest = hmac.new(_key(secret), signed_content, hashlib.sha256).digest()
     return f"{SIGNATURE_VERSION},{base64.b64encode(digest).decode()}"
 
@@ -34,18 +35,22 @@ def verify(
     tolerance_seconds: int = 300,
     now: float | None = None,
 ) -> None:
-    """Raise InvalidSignatureError unless one of the space-separated signatures matches."""
+    """Raise InvalidSignatureError unless one of the space-separated signatures matches.
+
+    Id, timestamp and signature come from the network: whatever they contain, only InvalidSignatureError is raised.
+    """
     try:
         sent_at = int(timestamp)
-    except ValueError as exc:
+        skew = abs((time.time() if now is None else now) - sent_at)  # a digit string beyond float range overflows here
+    except (ValueError, OverflowError) as exc:
         raise InvalidSignatureError("invalid timestamp") from exc
-    current = time.time() if now is None else now
-    if abs(current - sent_at) > tolerance_seconds:
+    if skew > tolerance_seconds:
         raise InvalidSignatureError("timestamp outside tolerance")
-    expected = sign(secret, msg_id=msg_id, timestamp=sent_at, body=body).split(",", 1)[1]
+    expected = sign(secret, msg_id=msg_id, timestamp=sent_at, body=body).split(",", 1)[1].encode()
     for candidate in signature_header.split():
         version, _, value = candidate.partition(",")
-        if version == SIGNATURE_VERSION and hmac.compare_digest(value, expected):
+        # Bytes, not str: compare_digest raises TypeError on a non-ASCII str.
+        if version == SIGNATURE_VERSION and hmac.compare_digest(value.encode(errors="surrogatepass"), expected):
             return
     raise InvalidSignatureError("no matching signature")
 

@@ -16,6 +16,7 @@ async def test_outcome_ratio_and_latency_bounds() -> None:
     results = [await gateway.charge(uuid7(), Decimal("10.00"), Currency.RUB) for _ in range(2000)]
     success_rate = sum(r.succeeded for r in results) / len(results)
     assert 0.87 < success_rate < 0.93
+    assert len(delays) == len(results)  # one sleep per charge: the bounds check below must not pass on an empty list
     assert all(2 <= d <= 5 for d in delays)
     failures = [r for r in results if not r.succeeded]
     assert all(r.failure_reason in DECLINE_REASONS for r in failures)
