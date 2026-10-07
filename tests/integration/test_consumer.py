@@ -82,11 +82,14 @@ async def publish_raw(
     message_id: str,
     correlation_id: str | None = None,
     headers: dict[str, Any] | None = None,
+    content_type: str | None = None,
 ) -> None:
     """Publish the way an outside producer would: straight to the exchange, not through our own publisher."""
     async with channel_to(url) as channel:
         exchange = await channel.get_exchange("payments")
-        message = aio_pika.Message(body, message_id=message_id, correlation_id=correlation_id, headers=headers)
+        message = aio_pika.Message(
+            body, message_id=message_id, correlation_id=correlation_id, headers=headers, content_type=content_type
+        )
         await exchange.publish(message, routing_key="payment.created")
 
 
@@ -190,16 +193,22 @@ async def test_webhook_retries_with_backoff_then_dead_letters(db: Database, brok
 
 
 @pytest.mark.parametrize(
-    "body",
-    [b'{"garbage": true}', b"not json", b"[1, 2, 3]"],
-    ids=["not-an-event", "not-json", "not-an-object"],
+    ("body", "content_type"),
+    [
+        (b'{"garbage": true}', None),
+        (b"not json", None),
+        (b"[1, 2, 3]", None),
+        (b"{not json", "application/json"),  # claims to be JSON: FastStream's own decoder raises before our handler
+        (b"\xff\xfe", "text/plain"),  # claims to be text: so does its decoder
+    ],
+    ids=["not-an-event", "not-json", "not-an-object", "undecodable-json", "undecodable-text"],
 )
-async def test_invalid_message_goes_to_dlq(broker_settings: Settings, body: bytes) -> None:
+async def test_invalid_message_goes_to_dlq(broker_settings: Settings, body: bytes, content_type: str | None) -> None:
     url = broker_settings.rabbitmq_url
     async with httpx.AsyncClient() as http:
         app = build_consumer(broker_settings, gateway=AlwaysSucceeds(), http_client=http)
         async with TestApp(app):
-            await publish_raw(url, body, message_id="bad-1", correlation_id="corr-1")
+            await publish_raw(url, body, message_id="bad-1", correlation_id="corr-1", content_type=content_type)
             await wait_for(lambda: _dead_letters_at_least(url, 1))
     assert await queue_depths(url) == depths(dead=1)
     [message] = await dead_letters(url)

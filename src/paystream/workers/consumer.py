@@ -1,10 +1,11 @@
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
 import httpx
 from faststream import AckPolicy, FastStream
+from faststream.message import StreamMessage
 from faststream.rabbit.annotations import RabbitMessage
 from pydantic import ValidationError
 
@@ -34,6 +35,20 @@ class DeliveredMessage(Protocol):
     async def ack(self, multiple: bool = False) -> None: ...
 
     async def reject(self, requeue: bool = False) -> None: ...
+
+
+async def decode_or_raw(
+    message: StreamMessage[Any], original_decoder: Callable[[StreamMessage[Any]], Awaitable[Any]]
+) -> Any:
+    """A payload that cannot be decoded (invalid JSON under a JSON content type) still has to be settled.
+
+    If FastStream's decoder raised, the message would stay unacked. Its raw bytes go to handle_delivery instead,
+    which dead-letters them as an invalid message.
+    """
+    try:
+        return await original_decoder(message)
+    except ValueError:  # JSONDecodeError and UnicodeDecodeError both derive from it
+        return message.body
 
 
 async def handle_delivery(
@@ -106,7 +121,12 @@ def build_consumer(
     )
     retries = RetryPublisher(broker, settings.retry_delays_ms)
 
-    @broker.subscriber(payments_queue(settings.delivery_limit), PAYMENTS_EXCHANGE, ack_policy=AckPolicy.MANUAL)
+    @broker.subscriber(
+        payments_queue(settings.delivery_limit),
+        PAYMENTS_EXCHANGE,
+        ack_policy=AckPolicy.MANUAL,
+        decoder=decode_or_raw,
+    )
     async def handle_payment(body: Any, message: RabbitMessage) -> None:
         await handle_delivery(processor, retries, body=body, message=message)
 
