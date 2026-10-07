@@ -9,7 +9,7 @@ x-app: &app
     RABBITMQ_URL: amqp://paystream:paystream@rabbitmq:5672/
     API_KEYS: ${API_KEYS:-dev-api-key}
     WEBHOOK_SIGNING_SECRET: ${WEBHOOK_SIGNING_SECRET:-whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw}
-    WEBHOOK_ALLOWED_HOSTS: ${WEBHOOK_ALLOWED_HOSTS:-}
+    WEBHOOK_ALLOWED_HOSTS: ${WEBHOOK_ALLOWED_HOSTS:-webhook-sink}
     GATEWAY_MIN_DELAY: ${GATEWAY_MIN_DELAY:-2.0}
     GATEWAY_MAX_DELAY: ${GATEWAY_MAX_DELAY:-5.0}
     GATEWAY_SUCCESS_RATE: ${GATEWAY_SUCCESS_RATE:-0.9}
@@ -17,6 +17,11 @@ x-app: &app
     RETRY_BASE_DELAY_MS: ${RETRY_BASE_DELAY_MS:-2000}
     CONSUMER_PREFETCH: ${CONSUMER_PREFETCH:-10}
     OUTBOX_POLL_INTERVAL: ${OUTBOX_POLL_INTERVAL:-1.0}
+    LOG_JSON: ${LOG_JSON:-true}
+    METRICS_PORT: "9100"
+    OTEL_ENABLED: ${OTEL_ENABLED:-false}
+    # Used only when OTEL_ENABLED=true, with the jaeger service of the observability profile.
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
   depends_on:
     postgres:
       condition: service_healthy
@@ -86,6 +91,44 @@ services:
   consumer:
     <<: *app
     command: ["python", "-m", "paystream.workers.consumer"]
+
+  webhook-sink:
+    build: .
+    image: paystream:local
+    restart: unless-stopped
+    command: ["uvicorn", "paystream.devtools.webhook_sink:create_app_from_env", "--factory", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      WEBHOOK_SIGNING_SECRET: ${WEBHOOK_SIGNING_SECRET:-whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw}
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  prometheus:
+    image: prom/prometheus:v3.0.0
+    profiles: [observability]
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    profiles: [observability]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/paystream.json
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    profiles: [observability]
+    ports:
+      - "127.0.0.1:16686:16686"
 
 volumes:
   postgres-data:

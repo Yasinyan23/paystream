@@ -1,0 +1,78 @@
+{
+  "title": "Paystream",
+  "uid": "paystream",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Payments created / min",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(rate(paystream_payments_created_total[5m])) * 60" }]
+    },
+    {
+      "id": 2, "type": "stat", "title": "Approval rate",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percentunit" } },
+      "targets": [{ "refId": "A", "expr": "sum(rate(paystream_payments_processed_total{status=\"succeeded\"}[5m])) / sum(rate(paystream_payments_processed_total[5m]))" }]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Outbox pending",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "max(paystream_outbox_pending_events{job=\"outbox-relay\"})" }]
+    },
+    {
+      "id": 4, "type": "stat", "title": "Dead-letter queue depth",
+      "description": "Messages waiting in payments.dead, as RabbitMQ reports them: consumer dead-letters and the broker's own delivery-limit dead-letters alike.",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(rabbitmq_queue_messages_ready{queue=\"payments.dead\"})" }]
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Processed payments by status",
+      "gridPos": { "x": 0, "y": 5, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (status) (rate(paystream_payments_processed_total[1m]))", "legendFormat": "{{status}}" }]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Outbox publish lag p95",
+      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [{ "refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(paystream_outbox_publish_lag_seconds_bucket{job=\"outbox-relay\"}[5m])))", "legendFormat": "p95" }]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Webhook deliveries by result",
+      "gridPos": { "x": 0, "y": 13, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (result) (rate(paystream_webhook_deliveries_total[1m]))", "legendFormat": "{{result}}" }]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Retries and consumer dead-letters",
+      "description": "Publishes the consumer makes to the retry tiers and to the DLQ. A message the broker dead-letters at its delivery limit is not counted here: see the dead-letter queue depth.",
+      "gridPos": { "x": 12, "y": 13, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (delay_ms) (rate(paystream_messages_retried_total[1m]))", "legendFormat": "retry {{delay_ms}}ms" },
+        { "refId": "B", "expr": "sum by (reason) (rate(paystream_messages_dead_lettered_total[1m]))", "legendFormat": "dlq {{reason}}" }
+      ]
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "API latency p95 by route",
+      "gridPos": { "x": 0, "y": 21, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [{ "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, route) (rate(paystream_http_request_seconds_bucket[5m])))", "legendFormat": "{{route}}" }]
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "RabbitMQ queue depth",
+      "gridPos": { "x": 12, "y": 21, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (queue) (rabbitmq_queue_messages_ready{queue=~\"payments.*\"})", "legendFormat": "{{queue}}" }]
+    }
+  ]
+}
