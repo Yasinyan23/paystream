@@ -1,6 +1,6 @@
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 import aio_pika
 import pytest
@@ -9,7 +9,13 @@ from aio_pika.exceptions import PublishError
 from paystream.core.config import Settings, get_settings
 from paystream.messaging.broker import build_broker
 from paystream.messaging.retry import RetryPublisher
-from paystream.messaging.topology import PAYMENT_CREATED_KEY, PAYMENTS_EXCHANGE, declare_topology
+from paystream.messaging.topology import (
+    PAYMENT_CREATED_KEY,
+    PAYMENTS_EXCHANGE,
+    RETRY_EXCHANGE,
+    declare_topology,
+    retry_routing_key,
+)
 from paystream.workers.cli import dlq_list, dlq_replay, main
 
 pytestmark = pytest.mark.integration
@@ -46,6 +52,34 @@ async def dead_letters(settings: Settings, rabbitmq_url: str) -> AsyncIterator[s
     await purge_queues(rabbitmq_url)  # one RabbitMQ container serves the whole session: leave both queues empty
 
 
+@pytest.fixture
+async def broker_dead_letter(dead_letters: str, settings: Settings) -> str:
+    """`dead_letters` plus `loop-1`, dead-lettered by the broker at the delivery limit after a pass through the first
+    retry tier: its first death is `expired`, its last `delivery_limit`."""
+    connection = await aio_pika.connect(dead_letters)
+    async with connection:
+        channel = await connection.channel()
+        retry_exchange = await channel.get_exchange(RETRY_EXCHANGE.name)
+        await retry_exchange.publish(
+            aio_pika.Message(b"{}", message_id="loop-1"), routing_key=retry_routing_key(settings.retry_delays_ms[0])
+        )
+        queue = await channel.declare_queue("payments.new", passive=True)
+        rejected = 0
+        async with asyncio.timeout(10):
+            while rejected <= settings.delivery_limit:  # a consumer that keeps giving the message back
+                message = await queue.get(fail=False)
+                if message is None:  # still in the retry tier
+                    await asyncio.sleep(0.05)
+                    continue
+                await message.reject(requeue=True)
+                rejected += 1
+    async with asyncio.timeout(10):  # the broker dead-letters asynchronously
+        while True:
+            if len(await dlq_list(dead_letters, limit=10)) == 3:
+                return dead_letters
+            await asyncio.sleep(0.1)
+
+
 async def test_list_does_not_consume(dead_letters: str) -> None:
     first = await dlq_list(dead_letters, limit=10)
     second = await dlq_list(dead_letters, limit=10)
@@ -59,24 +93,10 @@ async def test_list_stops_at_the_limit(dead_letters: str) -> None:
     assert [m["message_id"] for m in await dlq_list(dead_letters, limit=1)] == ["dead-0"]
 
 
-async def test_list_shows_the_delivery_limit_as_reason(dead_letters: str, settings: Settings) -> None:
-    connection = await aio_pika.connect(dead_letters)
-    async with connection:
-        channel = await connection.channel()
-        exchange = await channel.get_exchange(PAYMENTS_EXCHANGE.name)
-        await exchange.publish(aio_pika.Message(b"{}", message_id="loop-1"), routing_key=PAYMENT_CREATED_KEY)
-        queue = await channel.declare_queue("payments.new", passive=True)
-        for _ in range(settings.delivery_limit + 1):  # a consumer that keeps giving the message back
-            message = await queue.get(timeout=5)
-            await message.reject(requeue=True)
-    async with asyncio.timeout(10):  # the broker dead-letters asynchronously
-        while True:
-            items = await dlq_list(dead_letters, limit=10)
-            if len(items) == 3:
-                break
-            await asyncio.sleep(0.1)
-    # the broker's dead letter has no x-dead-reason: only its own x-first-death-reason says why
-    assert {m["message_id"]: m["reason"] for m in items}["loop-1"] == "delivery_limit"
+async def test_list_shows_the_delivery_limit_as_reason(broker_dead_letter: str) -> None:
+    reasons = {m["message_id"]: m["reason"] for m in await dlq_list(broker_dead_letter, limit=10)}
+    # the broker's dead letter has no x-dead-reason: its last death says why it is here, its first is the retry tier
+    assert reasons["loop-1"] == "delivery_limit"
 
 
 async def test_replay_one_message(dead_letters: str) -> None:
@@ -99,6 +119,18 @@ async def test_replay_one_message(dead_letters: str) -> None:
     assert json.loads(message.body) == {"n": 1}
 
 
+async def test_replay_drops_the_brokers_death_bookkeeping(broker_dead_letter: str) -> None:
+    assert await dlq_replay(broker_dead_letter, message_id="loop-1", limit=100) == 1
+    connection = await aio_pika.connect(broker_dead_letter)
+    async with connection:
+        channel = await connection.channel()
+        queue = await channel.declare_queue("payments.new", passive=True)
+        message = await queue.get(timeout=5)
+        await message.ack()
+    assert message.message_id == "loop-1"
+    assert not [h for h in message.headers if h.startswith(("x-death", "x-first-death", "x-last-death"))]
+
+
 async def test_replay_stops_at_the_limit(dead_letters: str) -> None:
     assert await dlq_replay(dead_letters, message_id=None, limit=1) == 1
     assert [m["message_id"] for m in await dlq_list(dead_letters, limit=10)] == ["dead-1"]
@@ -119,25 +151,37 @@ async def test_replay_keeps_the_dead_letter_it_cannot_route(dead_letters: str) -
     assert [m["message_id"] for m in await dlq_list(dead_letters, limit=10)] == ["dead-0", "dead-1"]
 
 
-def test_main_replay_all(
-    dead_letters: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+@pytest.fixture
+def cli_env(dead_letters: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """`main()` is synchronous (it calls asyncio.run), so these tests are too. The cleared settings cache lets
+    RABBITMQ_URL take effect."""
     monkeypatch.setenv("RABBITMQ_URL", dead_letters)
     get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.mark.usefixtures("cli_env")
+def test_main_replay_all(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["dlq", "replay", "--all"]) == 0
     assert "replayed 2" in capsys.readouterr().out
     assert main(["dlq", "list"]) == 0
     assert capsys.readouterr().out.strip() == "[]"
-    get_settings.cache_clear()
+    assert main(["dlq", "replay", "--all"]) == 0  # nothing left to replay is not a failure
+    assert "replayed 0" in capsys.readouterr().out
 
 
-def test_main_replay_one_message(
-    dead_letters: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setenv("RABBITMQ_URL", dead_letters)
-    get_settings.cache_clear()
+@pytest.mark.usefixtures("cli_env")
+def test_main_replay_one_message(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["dlq", "replay", "--message-id", "dead-1"]) == 0
     assert "replayed 1" in capsys.readouterr().out
     assert main(["dlq", "list"]) == 0
     assert [m["message_id"] for m in json.loads(capsys.readouterr().out)] == ["dead-0"]
-    get_settings.cache_clear()
+
+
+@pytest.mark.usefixtures("cli_env")
+def test_main_replay_unknown_message_id_fails(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["dlq", "replay", "--message-id", "no-such-id"]) == 1
+    assert "no-such-id" in capsys.readouterr().err
+    assert main(["dlq", "list"]) == 0
+    assert [m["message_id"] for m in json.loads(capsys.readouterr().out)] == ["dead-0", "dead-1"]  # nothing moved

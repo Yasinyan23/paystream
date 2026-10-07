@@ -7,6 +7,7 @@ paystream dlq replay (--message-id ID | --all) [--limit N]
 import argparse
 import asyncio
 import json
+import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
@@ -14,7 +15,7 @@ from typing import Any
 import aio_pika
 
 from paystream.core.config import get_settings
-from paystream.messaging.retry import ATTEMPT_HEADER
+from paystream.messaging.retry import ATTEMPT_HEADER, _carry
 from paystream.messaging.topology import DEAD_QUEUE_NAME, PAYMENT_CREATED_KEY, PAYMENTS_EXCHANGE
 
 _DEAD_LETTER_HEADERS = {"x-dead-reason", "x-error", "x-failed-at", "x-last-error"}
@@ -35,8 +36,9 @@ async def dlq_list(rabbitmq_url: str, *, limit: int) -> list[dict[str, Any]]:
             items.append(
                 {
                     "message_id": message.message_id,
-                    # Messages the broker dead-lettered at the delivery limit carry no x-dead-reason.
-                    "reason": headers.get("x-dead-reason") or headers.get("x-first-death-reason"),
+                    # A message the broker dead-lettered has no x-dead-reason. Its last death says why it is here;
+                    # its first may be an earlier stop in a retry tier ("expired").
+                    "reason": headers.get("x-dead-reason") or headers.get("x-last-death-reason"),
                     "error": headers.get("x-error"),
                     "attempts": headers.get(ATTEMPT_HEADER),
                     "failed_at": headers.get("x-failed-at"),
@@ -60,7 +62,7 @@ async def dlq_replay(rabbitmq_url: str, *, message_id: str | None, limit: int) -
                 break
             if message_id is not None and message.message_id != message_id:
                 continue  # stays unacked, returns to the queue when the channel closes
-            headers = {k: v for k, v in (message.headers or {}).items() if k not in _DEAD_LETTER_HEADERS}
+            headers = {k: v for k, v in _carry(message.headers or {}).items() if k not in _DEAD_LETTER_HEADERS}
             headers[ATTEMPT_HEADER] = 1
             headers["x-replayed-at"] = datetime.now(UTC).isoformat()
             await exchange.publish(
@@ -99,6 +101,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(asyncio.run(dlq_list(url, limit=args.limit)), indent=2, default=str))
     else:
         count = asyncio.run(dlq_replay(url, message_id=args.message_id, limit=args.limit))
+        if args.message_id is not None and count == 0:
+            print(f"no dead letter with message id {args.message_id}", file=sys.stderr)
+            return 1
         print(f"replayed {count} message(s)")
     return 0
 
