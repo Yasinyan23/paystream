@@ -40,6 +40,11 @@ def test_backoff_jitter_stays_within_bounds() -> None:
     assert (low, high) == (pytest.approx(3.2), pytest.approx(4.8))
 
 
+def test_backoff_survives_huge_attempt_counts() -> None:
+    # The outbox attempts counter is unbounded; a long broker outage must not overflow the power.
+    assert exponential_backoff(5000, base=1.0, cap=60.0, jitter=0.0) == 60.0
+
+
 def test_backoff_rejects_attempt_zero() -> None:
     with pytest.raises(ValueError, match="attempt"):
         exponential_backoff(0, base=1.0, cap=60.0)
