@@ -5,11 +5,13 @@ import pytest
 import pytest_asyncio
 from alembic import command
 from alembic.config import Config
+from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 from sqlalchemy import text
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.rabbitmq import RabbitMqContainer
 
+from paystream.api.app import create_app
 from paystream.core.config import Settings
 from paystream.db.database import Database
 
@@ -69,3 +71,12 @@ async def db(settings: Settings) -> AsyncIterator[Database]:
         await connection.execute(text("TRUNCATE payments, outbox, webhook_attempts CASCADE"))
     yield database
     await database.dispose()
+
+
+@pytest_asyncio.fixture
+async def client(settings: Settings, db: Database) -> AsyncIterator[AsyncClient]:
+    app = create_app(settings)
+    async with app.router.lifespan_context(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test", headers={"X-API-Key": API_KEY}) as http:
+            yield http
