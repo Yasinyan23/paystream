@@ -1,3 +1,5 @@
+> Original test-assignment brief (Russian), reproduced verbatim for reference. It is not covered by this repository's MIT license.
+
 # Тестовое задание: Асинхронный сервис процессинга платежей
 
 ## Описание
