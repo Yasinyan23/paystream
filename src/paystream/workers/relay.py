@@ -6,6 +6,7 @@ import time
 from datetime import timedelta
 
 import asyncpg
+from prometheus_client import start_http_server
 from sqlalchemy.engine import make_url
 
 from paystream.core.config import Settings, get_settings
@@ -53,6 +54,7 @@ async def run_relay(settings: Settings, stop: asyncio.Event) -> None:
             wakeup.clear()
             try:
                 await relay.drain()
+                await relay.refresh_pending_gauge()
                 if time.monotonic() - last_purge > PURGE_EVERY_SECONDS:
                     purged = await relay.purge_published(timedelta(days=settings.outbox_retention_days))
                     last_purge = time.monotonic()
@@ -70,7 +72,7 @@ async def run_relay(settings: Settings, stop: asyncio.Event) -> None:
         logger.info("outbox relay stopped")
 
 
-def main() -> None:
+def main() -> None:  # pragma: no cover
     settings = get_settings()
     configure_logging("outbox-relay", json_logs=settings.log_json, level=settings.log_level)
 
@@ -81,6 +83,7 @@ def main() -> None:
             loop.add_signal_handler(sig, stop.set)
         await run_relay(settings, stop)
 
+    start_http_server(settings.metrics_port)
     asyncio.run(_run())
 
 

@@ -1,11 +1,14 @@
 import logging
+from collections.abc import Sequence
+from typing import Any
 
 from faststream.rabbit import Channel, RabbitBroker
+from faststream.types import BrokerMiddleware
 
 from paystream.core.config import Settings
 
 
-def build_broker(settings: Settings) -> RabbitBroker:
+def build_broker(settings: Settings, *, middlewares: Sequence[BrokerMiddleware[Any, Any]] = ()) -> RabbitBroker:
     # Publisher confirms: `publish` returns only after RabbitMQ has the message.
     # on_return_raises: an unroutable message is an error, not a silent drop.
     channel = Channel(
@@ -20,4 +23,5 @@ def build_broker(settings: Settings) -> RabbitBroker:
         default_channel=channel,
         graceful_timeout=30.0,
         logger=logging.getLogger("paystream.broker"),
+        middlewares=middlewares,
     )

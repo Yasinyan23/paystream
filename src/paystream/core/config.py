@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     log_json: bool = True
     log_level: str = "INFO"
 
+    metrics_port: int = 9100
+    metrics_require_api_key: bool = False
+
     @field_validator("api_keys", "webhook_allowed_hosts", mode="before")
     @classmethod
     def _split_csv(cls, value: object) -> object:

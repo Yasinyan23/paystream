@@ -6,6 +6,7 @@ import pytest_asyncio
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
+from prometheus_client import REGISTRY
 from pydantic import SecretStr
 from sqlalchemy import text
 from testcontainers.community.postgres import PostgresContainer
@@ -27,6 +28,11 @@ def alembic_config(url: str) -> Config:
     config.set_main_option("sqlalchemy.url", url)
     config.attributes["configure_logger"] = False
     return config
+
+
+def sample(name: str, **labels: str) -> float:
+    """One Prometheus sample from the process-wide registry; 0 until it is first touched. Assert on deltas."""
+    return REGISTRY.get_sample_value(name, labels) or 0.0
 
 
 @pytest.fixture(scope="session")

@@ -8,6 +8,8 @@ import structlog
 from faststream import AckPolicy, FastStream
 from faststream.message import StreamMessage
 from faststream.rabbit.annotations import RabbitMessage
+from faststream.rabbit.prometheus import RabbitPrometheusMiddleware
+from prometheus_client import REGISTRY, start_http_server
 
 from paystream.core.config import Settings, get_settings
 from paystream.core.logging import configure_logging
@@ -123,7 +125,10 @@ def build_consumer(
 ) -> FastStream:
     if settings.webhook_signing_secret is None:
         raise RuntimeError("WEBHOOK_SIGNING_SECRET must be set")
-    broker = build_broker(settings)
+    broker = build_broker(
+        settings,
+        middlewares=[RabbitPrometheusMiddleware(registry=REGISTRY, app_name="paystream-consumer")],
+    )
     db = Database(settings.database_url)
     client = http_client or build_http_client(settings)
     sender = WebhookSender(
@@ -169,9 +174,10 @@ def build_consumer(
     return app
 
 
-def main() -> None:
+def main() -> None:  # pragma: no cover
     settings = get_settings()
     configure_logging("consumer", json_logs=settings.log_json, level=settings.log_level)
+    start_http_server(settings.metrics_port)
     asyncio.run(build_consumer(settings).run())
 
 

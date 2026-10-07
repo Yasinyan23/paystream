@@ -19,7 +19,7 @@ from paystream.services.payments import PaymentCommand, PaymentService
 from paystream.services.processing import PaymentProcessor, PermanentProcessingError, TransientProcessingError
 from paystream.webhooks.sender import WebhookSender
 from paystream.webhooks.signing import verify
-from tests.conftest import WEBHOOK_SECRET
+from tests.conftest import WEBHOOK_SECRET, sample
 
 pytestmark = pytest.mark.integration
 HOOK = "https://hooks.test/payments"
@@ -71,6 +71,8 @@ def processor(db: Database, gateway: FakeGateway, http: httpx.AsyncClient) -> Pa
 @respx.mock
 async def test_success_updates_status_and_sends_signed_webhook(db: Database, http: httpx.AsyncClient) -> None:
     route = respx.post(HOOK).mock(return_value=httpx.Response(200))
+    processed_before = sample("paystream_payments_processed_total", status="succeeded")
+    delivered_before = sample("paystream_webhook_deliveries_total", result="delivered")
     payment_id = await create_payment(db)
     await processor(db, FakeGateway(ChargeResult(True)), http).process(event_for(payment_id))
 
@@ -91,6 +93,8 @@ async def test_success_updates_status_and_sends_signed_webhook(db: Database, htt
     assert body["type"] == "payment.succeeded"
     assert body["data"]["id"] == str(payment_id)
     assert body["data"]["amount"] == "10.00"
+    assert sample("paystream_payments_processed_total", status="succeeded") == processed_before + 1
+    assert sample("paystream_webhook_deliveries_total", result="delivered") == delivered_before + 1
 
 
 @respx.mock

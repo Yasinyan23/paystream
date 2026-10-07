@@ -25,6 +25,7 @@ from paystream.repositories.payments import PaymentRepository
 from paystream.services.outbox_relay import OutboxRelay
 from paystream.services.payments import PaymentCommand, PaymentService
 from paystream.workers.consumer import build_consumer
+from tests.conftest import sample
 
 pytestmark = pytest.mark.integration
 HOOK = "https://hooks.test/payments"
@@ -170,6 +171,8 @@ async def _dead_letters_at_least(url: str, count: int) -> bool:
 @respx.mock
 async def test_end_to_end_success(db: Database, broker_settings: Settings) -> None:
     route = respx.post(HOOK).mock(return_value=httpx.Response(200))
+    received = {"app_name": "paystream-consumer", "broker": "rabbitmq", "handler": "payments.payment.created"}
+    received_before = sample("faststream_received_messages_total", **received)
     async with httpx.AsyncClient() as http:
         app = build_consumer(broker_settings, gateway=AlwaysSucceeds(), http_client=http)
         async with TestApp(app):
@@ -177,12 +180,15 @@ async def test_end_to_end_success(db: Database, broker_settings: Settings) -> No
             await wait_for(lambda: _is(db, payment_id, PaymentStatus.SUCCEEDED))
             await wait_for(lambda: _calls_at_least(route, 1))
     assert await queue_depths(broker_settings.rabbitmq_url) == depths()
+    assert sample("faststream_received_messages_total", **received) == received_before + 1  # FastStream's middleware
 
 
 @respx.mock
 async def test_webhook_retries_with_backoff_then_dead_letters(db: Database, broker_settings: Settings) -> None:
     url = broker_settings.rabbitmq_url
     route = respx.post(HOOK).mock(return_value=httpx.Response(503))
+    dead_before = sample("paystream_messages_dead_lettered_total", reason="max_attempts_exceeded")
+    retried_before = {delay: sample("paystream_messages_retried_total", delay_ms=delay) for delay in ("300", "600")}
     async with httpx.AsyncClient() as http:
         app = build_consumer(broker_settings, gateway=AlwaysSucceeds(), http_client=http)
         async with TestApp(app):
@@ -198,6 +204,9 @@ async def test_webhook_retries_with_backoff_then_dead_letters(db: Database, brok
     assert message.headers["x-attempt"] == 3
     assert "HTTP 503" in str(message.headers["x-error"])
     assert "x-death" not in message.headers  # RabbitMQ's bookkeeping from the retry hops is not carried along
+    assert sample("paystream_messages_dead_lettered_total", reason="max_attempts_exceeded") == dead_before + 1
+    for delay, before in retried_before.items():  # one hop through each retry tier
+        assert sample("paystream_messages_retried_total", delay_ms=delay) == before + 1
 
 
 @pytest.mark.parametrize(

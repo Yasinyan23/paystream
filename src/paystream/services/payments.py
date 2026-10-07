@@ -3,6 +3,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid7
 
+from paystream.core.metrics import IDEMPOTENT_REPLAYS, PAYMENTS_CREATED
 from paystream.db.database import Database
 from paystream.db.models import OutboxEvent, Payment
 from paystream.domain.errors import IdempotencyKeyReusedError
@@ -99,11 +100,13 @@ class PaymentService:
                     raise RuntimeError("idempotency conflict without a stored payment")
                 if existing.request_hash != fingerprint:
                     raise IdempotencyKeyReusedError(idempotency_key)
+                IDEMPOTENT_REPLAYS.inc()
                 return CreateResult(existing, replayed=True)
 
             outbox = OutboxRepository(session)
             outbox.add(build_payment_created_event(payment, correlation_id))
             await outbox.notify()
+        PAYMENTS_CREATED.labels(payment.currency.value).inc()
         return CreateResult(payment, replayed=False)
 
     async def get(self, payment_id: UUID) -> PaymentView | None:

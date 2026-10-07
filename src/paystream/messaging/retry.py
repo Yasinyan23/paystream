@@ -5,6 +5,7 @@ from typing import Any
 
 from faststream.rabbit import RabbitBroker
 
+from paystream.core.metrics import MESSAGES_DEAD_LETTERED, MESSAGES_RETRIED
 from paystream.messaging.publisher import publish_json
 from paystream.messaging.topology import DEAD_LETTER_EXCHANGE, DEAD_LETTER_KEY, RETRY_EXCHANGE, retry_routing_key
 
@@ -60,6 +61,7 @@ class RetryPublisher:
             correlation_id=correlation_id,
             headers={**_carry(headers), ATTEMPT_HEADER: attempt + 1, "x-last-error": error[:500]},
         )
+        MESSAGES_RETRIED.labels(str(delay)).inc()
         logger.info("message %s attempt %d failed, retrying in %d ms: %s", message_id, attempt, delay, error)
         return True
 
@@ -89,4 +91,5 @@ class RetryPublisher:
                 "x-failed-at": datetime.now(UTC).isoformat(),
             },
         )
+        MESSAGES_DEAD_LETTERED.labels(reason).inc()
         logger.warning("message %s dead-lettered after attempt %d (%s): %s", message_id, attempt, reason, error)

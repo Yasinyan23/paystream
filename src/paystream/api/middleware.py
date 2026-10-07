@@ -1,10 +1,13 @@
 import re
+import time
 from contextvars import ContextVar
 from uuid import uuid4
 
 import structlog
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from paystream.core.metrics import HTTP_REQUESTS, HTTP_SECONDS
 
 request_id_ctx: ContextVar[str | None] = ContextVar("request_id", default=None)
 _VALID_REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,128}")
@@ -36,3 +39,31 @@ class RequestIdMiddleware:
         await self.app(scope, receive, send_with_request_id)
         request_id_ctx.reset(token)
         structlog.contextvars.unbind_contextvars("request_id")
+
+
+class MetricsMiddleware:
+    """Counts requests by route template (not raw path) so label cardinality stays bounded."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        started = time.perf_counter()
+        status = 500
+
+        async def capture_status(message: Message) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            await send(message)
+
+        try:
+            await self.app(scope, receive, capture_status)
+        finally:
+            route = getattr(scope.get("route"), "path", "unmatched")
+            method = scope["method"]
+            HTTP_REQUESTS.labels(method, route, str(status)).inc()
+            HTTP_SECONDS.labels(method, route).observe(time.perf_counter() - started)

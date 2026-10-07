@@ -4,6 +4,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
+from paystream.core.metrics import GATEWAY_SECONDS, PAYMENTS_PROCESSED, WEBHOOK_DELIVERIES, WEBHOOK_SECONDS
 from paystream.db.database import Database
 from paystream.db.models import Payment, WebhookAttempt
 from paystream.domain.events import PAYMENT_CREATED, EventEnvelope, PaymentCreatedData, webhook_event_id
@@ -68,12 +69,15 @@ class PaymentProcessor:
         payment = await self._load(data.payment_id)
 
         if payment.status is PaymentStatus.PENDING:
-            charge = await self._gateway.charge(payment.id, payment.amount, payment.currency)
+            with GATEWAY_SECONDS.time():
+                charge = await self._gateway.charge(payment.id, payment.amount, payment.currency)
             status = PaymentStatus.SUCCEEDED if charge.succeeded else PaymentStatus.FAILED
             async with self._db.sessionmaker() as session, session.begin():
                 applied = await PaymentRepository(session).complete(
                     payment.id, status=status, failure_reason=charge.failure_reason
                 )
+            if applied:
+                PAYMENTS_PROCESSED.labels(status.value).inc()
             logger.info("payment %s -> %s (applied=%s)", payment.id, status, applied)
             payment = await self._load(payment.id)  # another consumer may have won the race
 
@@ -92,6 +96,8 @@ class PaymentProcessor:
         async with self._db.sessionmaker() as session:
             attempt = await WebhookAttemptRepository(session).count(payment.id) + 1
         result = await self._webhooks.deliver(url, event_id=event_id, payload=webhook_payload(payment))
+        WEBHOOK_SECONDS.observe(result.duration_ms / 1000)
+        WEBHOOK_DELIVERIES.labels("delivered" if result.ok else "rejected" if result.permanent else "failed").inc()
         async with self._db.sessionmaker() as session, session.begin():
             WebhookAttemptRepository(session).add(
                 WebhookAttempt(

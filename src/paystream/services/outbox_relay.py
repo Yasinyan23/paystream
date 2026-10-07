@@ -7,6 +7,7 @@ from uuid import UUID
 
 from faststream.rabbit import RabbitBroker
 
+from paystream.core.metrics import OUTBOX_LAG_SECONDS, OUTBOX_PENDING
 from paystream.db.database import Database
 from paystream.domain.backoff import exponential_backoff
 from paystream.domain.events import PAYMENT_CREATED
@@ -64,6 +65,7 @@ class OutboxRelay:
                     logger.warning("outbox publish failed for %s, retry in %.1fs: %s", event.id, delay, exc)
                     # The broker is probably down: stop here, the rest of the batch stays pending.
                     break
+                OUTBOX_LAG_SECONDS.observe((datetime.now(UTC) - event.created_at).total_seconds())
                 published.append(event.id)
             await repo.mark_published(published)
         if published:
@@ -78,6 +80,10 @@ class OutboxRelay:
             total += stats.published
             if stats.failed or stats.published < self._batch_size:
                 return total
+
+    async def refresh_pending_gauge(self) -> None:
+        async with self._db.sessionmaker() as session:
+            OUTBOX_PENDING.set(await OutboxRepository(session).count_pending())
 
     async def purge_published(self, older_than: timedelta) -> int:
         async with self._db.sessionmaker() as session, session.begin():

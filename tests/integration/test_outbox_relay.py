@@ -17,6 +17,7 @@ from paystream.messaging.topology import declare_topology
 from paystream.repositories.outbox import OutboxRepository
 from paystream.services.outbox_relay import OutboxRelay
 from paystream.workers.relay import run_relay
+from tests.conftest import sample
 
 pytestmark = pytest.mark.integration
 
@@ -79,12 +80,24 @@ async def test_publishes_due_events_with_event_id_as_message_id(
 ) -> None:
     events = await add_events(db, 3)
     relay = OutboxRelay(db, broker, batch_size=100, max_backoff=60)
+    lag_samples_before = sample("paystream_outbox_publish_lag_seconds_count")
     stats = await relay.publish_due()
     assert (stats.published, stats.failed) == (3, 0)
     assert await queued_message_ids(rabbitmq_url, 3) == [str(e.id) for e in events]
     async with db.sessionmaker() as session:
         statuses = set(await session.scalars(select(OutboxEvent.status)))
     assert statuses == {OutboxStatus.PUBLISHED}
+    assert sample("paystream_outbox_publish_lag_seconds_count") == lag_samples_before + 3
+
+
+async def test_pending_gauge_counts_unpublished_events(db: Database, broker: RabbitBroker) -> None:
+    await add_events(db, 2)
+    relay = OutboxRelay(db, broker, batch_size=100, max_backoff=60)
+    await relay.refresh_pending_gauge()
+    assert sample("paystream_outbox_pending_events") == 2
+    await relay.publish_due()
+    await relay.refresh_pending_gauge()
+    assert sample("paystream_outbox_pending_events") == 0
 
 
 async def test_drain_processes_more_than_one_batch(db: Database, broker: RabbitBroker, rabbitmq_url: str) -> None:

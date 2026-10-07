@@ -5,8 +5,9 @@ from fastapi import FastAPI
 
 from paystream import __version__
 from paystream.api.errors import install_error_handlers
-from paystream.api.middleware import RequestIdMiddleware
+from paystream.api.middleware import MetricsMiddleware, RequestIdMiddleware
 from paystream.api.routes.health import router as health_router
+from paystream.api.routes.metrics import router as metrics_router
 from paystream.api.routes.payments import router as payments_router
 from paystream.core.config import Settings, get_settings
 from paystream.core.logging import configure_logging
@@ -35,8 +36,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="Paystream", version=__version__, description=DESCRIPTION, lifespan=lifespan)
     app.state.settings = settings
+    # Starlette runs the last-added middleware first: RequestId wraps Metrics.
+    app.add_middleware(MetricsMiddleware)
     app.add_middleware(RequestIdMiddleware)
     install_error_handlers(app)
     app.include_router(health_router)
+    app.include_router(metrics_router)
     app.include_router(payments_router)
     return app
