@@ -7,7 +7,7 @@ import httpx
 import pytest
 import respx
 from faststream import TestApp
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from opentelemetry import trace
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
@@ -16,12 +16,14 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from sqlalchemy import select
 
+from paystream.api.app import create_app
 from paystream.core.config import Settings
 from paystream.core.telemetry import instrument_database
 from paystream.db.database import Database
 from paystream.db.models import OutboxEvent
 from paystream.workers.consumer import build_consumer
 from paystream.workers.relay import run_relay
+from tests.conftest import API_KEY
 
 pytestmark = pytest.mark.integration
 WEBHOOK_URL = "https://hooks.test/payments"
@@ -109,6 +111,30 @@ async def test_database_statements_become_spans(db: Database, spans: InMemorySpa
     finally:
         SQLAlchemyInstrumentor().uninstrument()
     assert "SELECT" in {span.name for span in spans.get_finished_spans()}
+
+
+async def test_health_probes_stay_out_of_traces(
+    settings: Settings, spans: InMemorySpanExporter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("paystream.api.app.configure_tracing", lambda *_: None)  # the fixture's provider stays global
+    app = create_app(settings.model_copy(update={"otel_enabled": True}))  # which also instruments the database
+    # The host name contains "metrics": a request may be kept out of the traces by its path only.
+    transport = ASGITransport(app=app)
+    try:
+        async with (
+            app.router.lifespan_context(app),
+            AsyncClient(transport=transport, base_url="http://metrics.test") as http,
+        ):
+            for probe in ("/health", "/ready", "/metrics"):
+                assert (await http.get(probe)).status_code == 200
+            assert spans.get_finished_spans() == ()
+            body = {"amount": "1.00", "currency": "EUR"}
+            await http.post("/api/v1/payments", json=body, headers={"X-API-Key": API_KEY, "Idempotency-Key": "probe-1"})
+    finally:
+        SQLAlchemyInstrumentor().uninstrument()
+    recorded = spans.get_finished_spans()
+    assert trace.SpanKind.SERVER in {s.kind for s in recorded}
+    assert "postgresql" in {(s.attributes or {}).get("db.system") for s in recorded}  # so /ready could have shown up
 
 
 def _traceparent(span: trace.Span) -> str:

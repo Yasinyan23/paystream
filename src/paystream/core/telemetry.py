@@ -15,7 +15,9 @@ from paystream import __version__
 from paystream.core.config import Settings
 from paystream.db.database import Database
 
-_EXCLUDED_URLS = "health,ready,metrics"
+# Probes and scrapes. The patterns are searched in the whole URL, host included, so they are anchored on the path:
+# a bare "metrics" would also drop every request sent to a host called metrics.example.com.
+_EXCLUDED_URLS = "/health$,/ready$,/metrics$"
 
 
 def configure_tracing(service: str, settings: Settings) -> TracerProvider | None:
