@@ -58,16 +58,18 @@ class PaymentCreateRequest(BaseModel):
     metadata: dict[str, Any] | None = None
     webhook_url: HttpUrl | None = None
 
-    @field_validator("description", "metadata")
+    @field_validator("description")
     @classmethod
-    def _storable[T](cls, value: T) -> T:
+    def _storable_description(cls, value: str | None) -> str | None:
         _check_storable(value)
         return value
 
     @field_validator("metadata")
     @classmethod
     def _limit_metadata(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
-        if value is not None and len(json.dumps(value).encode()) > _MAX_METADATA_BYTES:
+        # First, always: json.dumps raises RecursionError (not ValueError) beyond ~25k levels that json.loads accepts.
+        _check_storable(value)
+        if value is not None and len(json.dumps(value, ensure_ascii=False).encode()) > _MAX_METADATA_BYTES:
             raise ValueError("metadata must be at most 16 KB when serialized")
         return value
 

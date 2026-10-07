@@ -47,6 +47,8 @@ NON_STORABLE = [
     pytest.param('{"amount":"1e-10000000","currency":"RUB"}', id="amount-rounding-to-zero"),
     pytest.param(raw_payment('"metadata":' + '{"a":' * 40 + "1" + "}" * 40), id="metadata-40-levels-deep"),
     pytest.param(raw_payment('"metadata":' + '{"a":' * 5000 + "1" + "}" * 5000), id="metadata-5000-levels-deep"),
+    # With the default 8 MB stack json.loads accepts ~43k levels and json.dumps raises RecursionError above ~25k
+    pytest.param(raw_payment('"metadata":' + '{"a":' * 30_000 + "1" + "}" * 30_000), id="metadata-30000-levels-deep"),
 ]
 
 
@@ -175,3 +177,18 @@ async def test_get_unknown_payment_is_404(client: AsyncClient) -> None:
 async def test_get_with_malformed_id_is_422(client: AsyncClient) -> None:
     response = await client.get("/api/v1/payments/not-a-uuid")
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(("chars", "status"), [(3_000, 202), (9_000, 422)])
+async def test_metadata_limit_counts_utf8_bytes(client: AsyncClient, chars: int, status: int) -> None:
+    # Cyrillic is 2 bytes in UTF-8 and 6 as a \uXXXX escape: 3000 chars fit in 16 KB, 9000 chars (18 KB of bytes) do not
+    response = await create(client, "order-51", {**BODY, "metadata": {"note": "я" * chars}})
+    assert response.status_code == status
+
+
+async def test_unsupported_method_is_405_with_allow_header(client: AsyncClient) -> None:
+    response = await client.delete("/api/v1/payments/0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b")
+    assert response.status_code == 405
+    assert response.headers["content-type"] == "application/problem+json"
+    assert response.json()["type"] == "urn:paystream:problem:method-not-allowed"
+    assert response.headers["allow"] == "GET"
