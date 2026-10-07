@@ -6,6 +6,7 @@ from fastapi import Header, Request, Security
 from fastapi.security import APIKeyHeader
 
 from paystream.api.errors import ApiProblem
+from paystream.services.payments import PaymentService
 
 _api_key_header = APIKeyHeader(
     name="X-API-Key", scheme_name="ApiKeyAuth", auto_error=False, description="Static API key"
@@ -42,3 +43,7 @@ async def idempotency_key(
             "Use 1-255 printable ASCII characters without spaces",
         )
     return key
+
+
+def get_payment_service(request: Request) -> PaymentService:
+    return PaymentService(request.app.state.db)
