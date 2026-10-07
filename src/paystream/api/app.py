@@ -38,7 +38,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             await app.state.db.dispose()
 
-    app = FastAPI(title="Paystream", version=__version__, description=DESCRIPTION, lifespan=lifespan)
+    app = FastAPI(
+        title="Paystream",
+        version=__version__,
+        description=DESCRIPTION,
+        lifespan=lifespan,
+        # configure_tracing owns the exporter. FastAPI would also read OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, the variable
+        # Settings reads, and add one of its own: every span exported twice, tracing on even with OTEL_ENABLED=false.
+        telemetry={"auto_configure": False},
+    )
     app.state.settings = settings
     # Starlette runs the last-added middleware first: RequestId wraps Metrics.
     app.add_middleware(MetricsMiddleware)
