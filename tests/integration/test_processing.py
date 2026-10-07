@@ -250,3 +250,13 @@ async def test_webhook_body_for_a_declined_payment(db: Database, http: httpx.Asy
             "processed_at": payment.processed_at.isoformat(),
         },
     }
+
+
+@respx.mock
+async def test_receiver_text_with_nul_is_recorded(db: Database, http: httpx.AsyncClient) -> None:
+    respx.post(HOOK).mock(return_value=httpx.Response(500, content=b"bad\x00gateway"))
+    payment_id = await create_payment(db)
+    with pytest.raises(TransientProcessingError, match="HTTP 500"):
+        await processor(db, FakeGateway(ChargeResult(True)), http).process(event_for(payment_id))
+    _, summary = await load(db, payment_id)
+    assert (summary.attempts, summary.last_status_code) == (1, 500)  # a Postgres text column cannot hold the NUL
