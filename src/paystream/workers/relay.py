@@ -11,8 +11,9 @@ from sqlalchemy.engine import make_url
 
 from paystream.core.config import Settings, get_settings
 from paystream.core.logging import configure_logging
+from paystream.core.telemetry import configure_tracing
 from paystream.db.database import Database
-from paystream.messaging.broker import build_broker
+from paystream.messaging.broker import build_broker, telemetry_middlewares
 from paystream.messaging.topology import declare_topology
 from paystream.repositories.outbox import OUTBOX_NOTIFY_CHANNEL
 from paystream.services.outbox_relay import OutboxRelay
@@ -36,7 +37,7 @@ async def _wait_any(events: tuple[asyncio.Event, ...], seconds: float) -> None:
 
 async def run_relay(settings: Settings, stop: asyncio.Event) -> None:
     db = Database(settings.database_url)
-    broker = build_broker(settings)
+    broker = build_broker(settings, middlewares=telemetry_middlewares(settings))
     await broker.connect()
     await declare_topology(broker, settings)
     relay = OutboxRelay(db, broker, batch_size=settings.outbox_batch_size, max_backoff=settings.outbox_max_backoff)
@@ -75,6 +76,7 @@ async def run_relay(settings: Settings, stop: asyncio.Event) -> None:
 def main() -> None:  # pragma: no cover
     settings = get_settings()
     configure_logging("outbox-relay", json_logs=settings.log_json, level=settings.log_level)
+    configure_tracing("outbox-relay", settings)
 
     async def _run() -> None:
         stop = asyncio.Event()

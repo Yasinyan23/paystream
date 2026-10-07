@@ -14,6 +14,16 @@ def test_no_api_key_by_default(monkeypatch) -> None:
     assert Settings(_env_file=None).api_keys == []
 
 
+def test_tracing_is_opt_in_and_set_by_the_otel_env_vars(monkeypatch) -> None:
+    monkeypatch.delenv("OTEL_ENABLED", raising=False)
+    assert Settings(_env_file=None).otel_enabled is False
+    monkeypatch.setenv("OTEL_ENABLED", "true")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://jaeger:4318/v1/traces")
+    settings = Settings(_env_file=None)
+    assert settings.otel_enabled is True
+    assert settings.otel_exporter_otlp_traces_endpoint == "http://jaeger:4318/v1/traces"
+
+
 def test_retry_delays_are_exponential() -> None:
     settings = Settings(_env_file=None, retry_max_attempts=3, retry_base_delay_ms=2000)
     assert settings.retry_delays_ms == [2000, 4000]

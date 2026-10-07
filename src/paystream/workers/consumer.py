@@ -13,10 +13,11 @@ from prometheus_client import REGISTRY, start_http_server
 
 from paystream.core.config import Settings, get_settings
 from paystream.core.logging import configure_logging
+from paystream.core.telemetry import configure_tracing, instrument_database
 from paystream.db.database import Database
 from paystream.domain.events import EventEnvelope
 from paystream.gateway.simulated import PaymentGateway, SimulatedGateway
-from paystream.messaging.broker import build_broker
+from paystream.messaging.broker import build_broker, telemetry_middlewares
 from paystream.messaging.retry import ATTEMPT_HEADER, RetryPublisher
 from paystream.messaging.topology import PAYMENTS_EXCHANGE, declare_topology, payments_queue
 from paystream.services.processing import PaymentProcessor, PermanentProcessingError
@@ -127,9 +128,14 @@ def build_consumer(
         raise RuntimeError("WEBHOOK_SIGNING_SECRET must be set")
     broker = build_broker(
         settings,
-        middlewares=[RabbitPrometheusMiddleware(registry=REGISTRY, app_name="paystream-consumer")],
+        middlewares=[
+            *telemetry_middlewares(settings),
+            RabbitPrometheusMiddleware(registry=REGISTRY, app_name="paystream-consumer"),
+        ],
     )
     db = Database(settings.database_url)
+    if settings.otel_enabled:
+        instrument_database(db)
     client = http_client or build_http_client(settings)
     sender = WebhookSender(
         client,
@@ -177,6 +183,7 @@ def build_consumer(
 def main() -> None:  # pragma: no cover
     settings = get_settings()
     configure_logging("consumer", json_logs=settings.log_json, level=settings.log_level)
+    configure_tracing("consumer", settings)
     start_http_server(settings.metrics_port)
     asyncio.run(build_consumer(settings).run())
 

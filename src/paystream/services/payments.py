@@ -4,6 +4,7 @@ from typing import Any
 from uuid import UUID, uuid7
 
 from paystream.core.metrics import IDEMPOTENT_REPLAYS, PAYMENTS_CREATED
+from paystream.core.telemetry import inject_trace_headers
 from paystream.db.database import Database
 from paystream.db.models import OutboxEvent, Payment
 from paystream.domain.errors import IdempotencyKeyReusedError
@@ -59,12 +60,13 @@ def build_payment_created_event(payment: Payment, correlation_id: str | None) ->
         occurred_at=payment.created_at,
         data=data.model_dump(mode="json"),
     )
+    headers = inject_trace_headers({"correlation_id": correlation_id} if correlation_id else {})
     return OutboxEvent(
         id=event_id,
         aggregate_id=payment.id,
         event_type=PAYMENT_CREATED,
         payload=envelope.model_dump(mode="json"),
-        headers={"correlation_id": correlation_id} if correlation_id else {},
+        headers=headers,
     )
 
 

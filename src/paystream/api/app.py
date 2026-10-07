@@ -11,6 +11,7 @@ from paystream.api.routes.metrics import router as metrics_router
 from paystream.api.routes.payments import router as payments_router
 from paystream.core.config import Settings, get_settings
 from paystream.core.logging import configure_logging
+from paystream.core.telemetry import configure_tracing, instrument_database, instrument_fastapi
 from paystream.db.database import Database
 
 DESCRIPTION = """
@@ -25,10 +26,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging("api", json_logs=settings.log_json, level=settings.log_level)
     if not settings.api_keys:
         raise RuntimeError("API_KEYS must contain at least one key")
+    configure_tracing("api", settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.db = Database(settings.database_url)
+        if settings.otel_enabled:
+            instrument_database(app.state.db)
         try:
             yield
         finally:
@@ -43,4 +47,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_router)
     app.include_router(metrics_router)
     app.include_router(payments_router)
+    # Unconditional: an incoming `traceparent` becomes the request's trace context even when tracing is off.
+    instrument_fastapi(app)
     return app

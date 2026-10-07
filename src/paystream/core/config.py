@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     metrics_port: int = 9100
     metrics_require_api_key: bool = False
 
+    otel_enabled: bool = False
+    # The full /v1/traces URL, not OTel's base-URL variable: hence the traces-specific env name.
+    otel_exporter_otlp_traces_endpoint: str = "http://localhost:4318/v1/traces"
+
     @field_validator("api_keys", "webhook_allowed_hosts", mode="before")
     @classmethod
     def _split_csv(cls, value: object) -> object:

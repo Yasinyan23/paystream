@@ -3,9 +3,18 @@ from collections.abc import Sequence
 from typing import Any
 
 from faststream.rabbit import Channel, RabbitBroker
+from faststream.rabbit.opentelemetry import RabbitTelemetryMiddleware
 from faststream.types import BrokerMiddleware
+from opentelemetry import trace
 
 from paystream.core.config import Settings
+
+
+def telemetry_middlewares(settings: Settings) -> list[BrokerMiddleware[Any, Any]]:
+    """The broker middlewares that trace publishes and deliveries; none unless tracing is enabled."""
+    if not settings.otel_enabled:
+        return []
+    return [RabbitTelemetryMiddleware(tracer_provider=trace.get_tracer_provider())]
 
 
 def build_broker(settings: Settings, *, middlewares: Sequence[BrokerMiddleware[Any, Any]] = ()) -> RabbitBroker:

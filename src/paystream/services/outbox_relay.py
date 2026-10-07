@@ -8,6 +8,7 @@ from uuid import UUID
 from faststream.rabbit import RabbitBroker
 
 from paystream.core.metrics import OUTBOX_LAG_SECONDS, OUTBOX_PENDING
+from paystream.core.telemetry import attached_context
 from paystream.db.database import Database
 from paystream.domain.backoff import exponential_backoff
 from paystream.domain.events import PAYMENT_CREATED
@@ -49,15 +50,18 @@ class OutboxRelay:
             repo = OutboxRepository(session)
             for event in await repo.claim_due(self._batch_size):
                 try:
-                    await publish_json(
-                        self._broker,
-                        event.payload,
-                        exchange=PAYMENTS_EXCHANGE,
-                        routing_key=ROUTING_KEYS[event.event_type],
-                        message_id=str(event.id),
-                        correlation_id=event.headers.get("correlation_id"),
-                        headers=event.headers,
-                    )
+                    # The broker's telemetry middleware parents its publish span on the current context: make
+                    # that the API request's trace stored in the row.
+                    with attached_context(event.headers):
+                        await publish_json(
+                            self._broker,
+                            event.payload,
+                            exchange=PAYMENTS_EXCHANGE,
+                            routing_key=ROUTING_KEYS[event.event_type],
+                            message_id=str(event.id),
+                            correlation_id=event.headers.get("correlation_id"),
+                            headers=event.headers,
+                        )
                 except Exception as exc:  # noqa: BLE001 — any publish failure is retried later
                     failed += 1
                     delay = exponential_backoff(event.attempts + 1, base=1.0, cap=self._max_backoff, rand=self._rand)
