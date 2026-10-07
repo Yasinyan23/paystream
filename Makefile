@@ -2,14 +2,17 @@
 COMPOSE := docker compose
 API := http://localhost:8000
 
-.PHONY: help up down logs demo observability test test-unit e2e coverage lint fmt load dlq dlq-replay
+.PHONY: help up stack down logs demo observability test test-unit e2e coverage lint fmt load dlq dlq-replay
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-up: ## Build and start the stack, wait until the API is ready
+up: ## Build and (re)create the stack, wait until the API is ready
 	$(COMPOSE) up -d --build
 	@printf "waiting for $(API)/ready"; until curl -sf $(API)/ready >/dev/null; do printf "."; sleep 1; done; echo " ready"
+
+stack: ## Start the stack if it is down; a running stack is left as it is
+	$(COMPOSE) up -d --wait --no-recreate
 
 down: ## Stop everything and delete volumes
 	$(COMPOSE) --profile observability down -v
@@ -17,10 +20,10 @@ down: ## Stop everything and delete volumes
 logs: ## Follow service logs
 	$(COMPOSE) logs -f api outbox-relay consumer webhook-sink
 
-demo: up ## Guided tour: idempotency, signed webhooks, retries, DLQ
+demo: stack ## Guided tour: idempotency, signed webhooks, retries, DLQ
 	uv run python scripts/demo.py
 
-observability: ## Start the stack with Prometheus, Grafana and Jaeger
+observability: ## Build and (re)create the stack with tracing on, plus Prometheus, Grafana and Jaeger
 	OTEL_ENABLED=true $(COMPOSE) --profile observability up -d --build
 	@echo "Grafana http://localhost:3000  Jaeger http://localhost:16686  Prometheus http://localhost:9090"
 
@@ -30,7 +33,7 @@ test: ## Unit and integration tests (Docker required)
 test-unit: ## Unit tests only, no Docker
 	uv run pytest tests/unit
 
-e2e: up ## End-to-end tests against the running stack
+e2e: stack ## End-to-end tests against the running stack
 	uv run pytest -m e2e tests/e2e -v
 
 coverage: ## Tests with the 90% coverage gate
@@ -42,7 +45,7 @@ lint: ## ruff, formatting check and mypy
 fmt: ## Auto-fix lint and format
 	uv run ruff check --fix . && uv run ruff format .
 
-load: up ## Load test: 500 payments, 50 concurrent
+load: stack ## Load test: 500 payments, 50 concurrent
 	uv run python scripts/loadtest.py --payments 500 --concurrency 50
 
 dlq: ## List dead letters
