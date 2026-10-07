@@ -2,6 +2,8 @@ import logging
 from typing import Any
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from paystream.db.database import Database
 from paystream.db.models import Payment, WebhookAttempt
 from paystream.domain.events import PAYMENT_CREATED, EventEnvelope, PaymentCreatedData, webhook_event_id
@@ -59,7 +61,10 @@ class PaymentProcessor:
     async def process(self, event: EventEnvelope) -> None:
         if event.event_type != PAYMENT_CREATED:
             raise PermanentProcessingError("unsupported_event", event.event_type)
-        data = PaymentCreatedData.model_validate(event.data)
+        try:
+            data = PaymentCreatedData.model_validate(event.data)
+        except ValidationError as exc:
+            raise PermanentProcessingError("invalid_event", str(exc)) from exc
         payment = await self._load(data.payment_id)
 
         if payment.status is PaymentStatus.PENDING:

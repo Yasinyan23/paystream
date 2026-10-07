@@ -7,6 +7,7 @@ from uuid import UUID, uuid7
 import httpx
 import pytest
 import respx
+from pydantic import ValidationError
 
 from paystream.db.database import Database
 from paystream.domain.events import PAYMENT_CREATED, EventEnvelope, PaymentCreatedData
@@ -173,6 +174,19 @@ async def test_unsupported_event_is_permanent(db: Database, http: httpx.AsyncCli
     with pytest.raises(PermanentProcessingError) as error:
         await processor(db, FakeGateway(), http).process(event)
     assert error.value.reason == "unsupported_event"
+
+
+async def test_malformed_event_data_is_permanent_and_touches_nothing(db: Database, http: httpx.AsyncClient) -> None:
+    payment_id = await create_payment(db)
+    gateway = FakeGateway(ChargeResult(True))
+    data = {"amount": "10.00", "currency": "USD", "webhook_url": HOOK}  # a valid event minus its payment_id
+    event = event_for(payment_id).model_copy(update={"data": data})
+    with pytest.raises(PermanentProcessingError) as error:
+        await processor(db, gateway, http).process(event)
+    assert error.value.reason == "invalid_event"
+    assert isinstance(error.value.__cause__, ValidationError)  # the original stays chained for the logs
+    payment, summary = await load(db, payment_id)
+    assert (gateway.calls, payment.status, summary.attempts) == (0, PaymentStatus.PENDING, 0)
 
 
 class RendezvousGateway(FakeGateway):
