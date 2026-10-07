@@ -1,3 +1,5 @@
+import logging
+
 from faststream.rabbit import Channel, RabbitBroker
 
 from paystream.core.config import Settings
@@ -11,4 +13,11 @@ def build_broker(settings: Settings) -> RabbitBroker:
         publisher_confirms=True,
         on_return_raises=True,
     )
-    return RabbitBroker(settings.rabbitmq_url, default_channel=channel, graceful_timeout=30.0)
+    # Its own logger: FastStream's default one has propagate=False and a colorized stdout handler, which would
+    # bypass the JSON logging setup.
+    return RabbitBroker(
+        settings.rabbitmq_url,
+        default_channel=channel,
+        graceful_timeout=30.0,
+        logger=logging.getLogger("paystream.broker"),
+    )

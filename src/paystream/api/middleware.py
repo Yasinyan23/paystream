@@ -2,6 +2,7 @@ import re
 from contextvars import ContextVar
 from uuid import uuid4
 
+import structlog
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -22,6 +23,7 @@ class RequestIdMiddleware:
         incoming = Headers(scope=scope).get("x-request-id")
         request_id = incoming if incoming and _VALID_REQUEST_ID.fullmatch(incoming) else uuid4().hex
         token = request_id_ctx.set(request_id)
+        structlog.contextvars.bind_contextvars(request_id=request_id)
 
         async def send_with_request_id(message: Message) -> None:
             if message["type"] == "http.response.start":
@@ -29,7 +31,8 @@ class RequestIdMiddleware:
             await send(message)
 
         # No finally: when an error escapes, the outer ServerErrorMiddleware builds the 500 response
-        # after this frame unwinds and still needs the id. Each request runs in its own task, so a
-        # skipped reset leaks nothing.
+        # (and logs it) after this frame unwinds and still needs the id. Each request runs in its own
+        # task, so a skipped reset or unbind leaks nothing.
         await self.app(scope, receive, send_with_request_id)
         request_id_ctx.reset(token)
+        structlog.contextvars.unbind_contextvars("request_id")

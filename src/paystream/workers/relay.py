@@ -9,6 +9,7 @@ import asyncpg
 from sqlalchemy.engine import make_url
 
 from paystream.core.config import Settings, get_settings
+from paystream.core.logging import configure_logging
 from paystream.db.database import Database
 from paystream.messaging.broker import build_broker
 from paystream.messaging.topology import declare_topology
@@ -70,14 +71,15 @@ async def run_relay(settings: Settings, stop: asyncio.Event) -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    settings = get_settings()
+    configure_logging("outbox-relay", json_logs=settings.log_json, level=settings.log_level)
 
     async def _run() -> None:
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop.set)
-        await run_relay(get_settings(), stop)
+        await run_relay(settings, stop)
 
     asyncio.run(_run())
 

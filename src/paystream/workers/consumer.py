@@ -4,11 +4,13 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
 import httpx
+import structlog
 from faststream import AckPolicy, FastStream
 from faststream.message import StreamMessage
 from faststream.rabbit.annotations import RabbitMessage
 
 from paystream.core.config import Settings, get_settings
+from paystream.core.logging import configure_logging
 from paystream.db.database import Database
 from paystream.domain.events import EventEnvelope
 from paystream.gateway.simulated import PaymentGateway, SimulatedGateway
@@ -70,6 +72,13 @@ async def handle_delivery(
     """Settle one delivery: ack it once it is routed, give it back to the queue if it cannot be. With manual acks
     an exception escaping from here would leave the message unacked, holding a prefetch slot until the channel
     closes."""
+    data = body.get("data") if isinstance(body, dict) else None
+    payment_id = data.get("payment_id") if isinstance(data, dict) else None
+    # Every log line of this delivery carries these. Contextvars are per task and aio-pika runs each delivery in
+    # its own, so concurrent messages keep their own context.
+    structlog.contextvars.bind_contextvars(message_id=message.message_id)
+    if payment_id:
+        structlog.contextvars.bind_contextvars(payment_id=payment_id)
     try:
         headers = dict(message.headers or {})
         route: dict[str, Any] = {
@@ -81,6 +90,7 @@ async def handle_delivery(
         attempt = 1  # stays 1 if the header turns out to be unreadable
         try:
             attempt = _attempt_number(headers)
+            structlog.contextvars.bind_contextvars(attempt=attempt)
             event = EventEnvelope.model_validate(body)
         except ValueError as exc:  # an unreadable header, or pydantic's ValidationError (a ValueError as well)
             await retries.dead_letter(**route, reason="invalid_message", error=str(exc), attempt=attempt)
@@ -101,6 +111,8 @@ async def handle_delivery(
         await message.reject(requeue=True)
     else:
         await message.ack()
+    finally:
+        structlog.contextvars.unbind_contextvars("message_id", "attempt", "payment_id")
 
 
 def build_consumer(
@@ -158,8 +170,9 @@ def build_consumer(
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    asyncio.run(build_consumer(get_settings()).run())
+    settings = get_settings()
+    configure_logging("consumer", json_logs=settings.log_json, level=settings.log_level)
+    asyncio.run(build_consumer(settings).run())
 
 
 if __name__ == "__main__":

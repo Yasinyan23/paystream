@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     outbox_max_backoff: float = Field(default=60.0, gt=0)
     outbox_retention_days: int = Field(default=7, ge=1)
 
+    log_json: bool = True
+    log_level: str = "INFO"
+
     @field_validator("api_keys", "webhook_allowed_hosts", mode="before")
     @classmethod
     def _split_csv(cls, value: object) -> object:
