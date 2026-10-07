@@ -4,11 +4,11 @@ from uuid import UUID
 import asyncpg
 import pytest
 from httpx import AsyncClient, Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from paystream.core.config import Settings
 from paystream.db.database import Database
-from paystream.db.models import OutboxEvent
+from paystream.db.models import OutboxEvent, Payment
 from paystream.repositories.outbox import OUTBOX_NOTIFY_CHANNEL
 
 pytestmark = pytest.mark.integration
@@ -24,6 +24,30 @@ BODY = {
 
 async def create(client: AsyncClient, key: str, body: dict[str, object] = BODY) -> Response:
     return await client.post("/api/v1/payments", json=body, headers={"Idempotency-Key": key})
+
+
+def raw_payment(members: str) -> str:
+    """JSON text of a valid payment plus extra members; `json=` cannot express NaN or lone surrogates."""
+    return '{"amount":"1","currency":"RUB",' + members + "}"
+
+
+NON_STORABLE = [
+    pytest.param(raw_payment('"metadata":{"x":NaN}'), id="metadata-nan"),
+    pytest.param(raw_payment('"metadata":{"x":[1,{"y":Infinity}]}'), id="metadata-nested-infinity"),
+    pytest.param(raw_payment('"metadata":{"x":-Infinity}'), id="metadata-negative-infinity"),
+    pytest.param(raw_payment('"metadata":{"x":1e999}'), id="metadata-float-overflowing-to-infinity"),
+    pytest.param(raw_payment(r'"description":"a\u0000b"'), id="description-nul"),
+    pytest.param(raw_payment(r'"metadata":{"k":[{"z":"a\u0000b"}]}'), id="metadata-value-nul"),
+    pytest.param(raw_payment(r'"metadata":{"a\u0000b":1}'), id="metadata-key-nul"),
+    pytest.param(raw_payment(r'"description":"\ud800"'), id="description-lone-surrogate"),
+    pytest.param(raw_payment(r'"metadata":{"k":["\udfff"]}'), id="metadata-value-lone-surrogate"),
+    pytest.param(raw_payment(r'"metadata":{"\ud800":1}'), id="metadata-key-lone-surrogate"),
+    pytest.param(raw_payment(r'"\ud800":1'), id="unknown-field-lone-surrogate"),
+    pytest.param('{"amount":NaN,"currency":"RUB"}', id="amount-nan"),
+    pytest.param('{"amount":"1e-10000000","currency":"RUB"}', id="amount-rounding-to-zero"),
+    pytest.param(raw_payment('"metadata":' + '{"a":' * 40 + "1" + "}" * 40), id="metadata-40-levels-deep"),
+    pytest.param(raw_payment('"metadata":' + '{"a":' * 5000 + "1" + "}" * 5000), id="metadata-5000-levels-deep"),
+]
 
 
 async def test_create_returns_202_and_location(client: AsyncClient) -> None:
@@ -104,6 +128,18 @@ async def test_validation_error_is_problem_details(client: AsyncClient) -> None:
     body = response.json()
     assert body["type"] == "urn:paystream:problem:validation-error"
     assert body["errors"][0]["loc"] == ["body", "amount"]
+
+
+@pytest.mark.parametrize("raw", NON_STORABLE)
+async def test_non_storable_input_is_422_and_persists_nothing(client: AsyncClient, db: Database, raw: str) -> None:
+    headers = {"Idempotency-Key": "order-50", "Content-Type": "application/json"}
+    response = await client.post("/api/v1/payments", content=raw, headers=headers)
+    assert response.status_code == 422
+    assert response.headers["content-type"] == "application/problem+json"
+    assert response.json()["type"] == "urn:paystream:problem:validation-error"
+    async with db.sessionmaker() as session:
+        assert await session.scalar(select(func.count()).select_from(Payment)) == 0
+        assert await session.scalar(select(func.count()).select_from(OutboxEvent)) == 0
 
 
 async def test_get_returns_details(client: AsyncClient) -> None:

@@ -65,13 +65,16 @@ def install_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _validation(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # The rejected `input` is not echoed: client data of any shape (NaN, lone surrogates, deep nesting) must not
+        # decide whether the 422 can be rendered (Starlette's JSONResponse refuses NaN, cannot encode surrogates).
+        errors = [{key: value for key, value in error.items() if key != "input"} for error in exc.errors()]
         return problem_response(
             request,
             status=422,
             slug="validation-error",
             title="Request validation failed",
             detail="One or more fields are invalid",
-            extra={"errors": jsonable_encoder(exc.errors())},
+            extra={"errors": jsonable_encoder(errors)},
         )
 
     @app.exception_handler(IdempotencyKeyReusedError)

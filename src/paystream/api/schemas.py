@@ -1,4 +1,6 @@
 import json
+import math
+import re
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -11,6 +13,26 @@ from paystream.domain.payment import Currency, PaymentStatus
 from paystream.services.payments import PaymentCommand, PaymentView
 
 _MAX_METADATA_BYTES = 16 * 1024
+_MAX_METADATA_DEPTH = 32  # pydantic serializes 255 levels at most: deeper metadata would be stored, never read back
+_UNSTORABLE_TEXT = re.compile(r"[\x00\ud800-\udfff]")  # NUL: Postgres text/jsonb; lone surrogate: not UTF-8
+
+
+def _check_storable(value: object, depth: int = 1) -> None:
+    """Reject what Postgres or JSON cannot carry (NUL, lone surrogates, NaN, Infinity) and over-deep nesting.
+
+    The client gets a 422 instead of a 500 from deeper down; recursion is bounded by `_MAX_METADATA_DEPTH`.
+    """
+    if isinstance(value, str):
+        if _UNSTORABLE_TEXT.search(value):
+            raise ValueError("must not contain NUL or lone surrogate characters")
+    elif isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("must not contain NaN or Infinity")
+    elif isinstance(value, dict | list):
+        if depth > _MAX_METADATA_DEPTH:
+            raise ValueError(f"must be nested at most {_MAX_METADATA_DEPTH} levels deep")
+        for child in [*value, *value.values()] if isinstance(value, dict) else value:  # keys, then values
+            _check_storable(child, depth + 1)
 
 
 class PaymentCreateRequest(BaseModel):
@@ -29,11 +51,18 @@ class PaymentCreateRequest(BaseModel):
         },
     )
 
-    amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    # `ge` a cent, not `gt=0`: the digit checks miss exponents beyond -10^7, and such an amount would round to 0.00
+    amount: Decimal = Field(ge=Decimal("0.01"), max_digits=18, decimal_places=2)
     currency: Currency
     description: str | None = Field(default=None, max_length=500)
     metadata: dict[str, Any] | None = None
     webhook_url: HttpUrl | None = None
+
+    @field_validator("description", "metadata")
+    @classmethod
+    def _storable[T](cls, value: T) -> T:
+        _check_storable(value)
+        return value
 
     @field_validator("metadata")
     @classmethod
