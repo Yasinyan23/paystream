@@ -129,11 +129,11 @@ async def test_purge_published(db: Database, broker: RabbitBroker, rabbitmq_url:
     assert await relay.purge_published(older_than=timedelta(seconds=-1)) == 1
 
 
-async def listening(db: Database) -> bool:
-    """Some session's last statement was the relay's LISTEN; it runs once the relay is connected to RabbitMQ too."""
+async def listen_pids(db: Database) -> set[int]:
+    """Sessions whose last statement was the relay's LISTEN; it runs once the relay is connected to RabbitMQ too."""
     async with db.engine.connect() as connection:
-        statement = text("SELECT count(*) FROM pg_stat_activity WHERE query = :listen")
-        return bool(await connection.scalar(statement, {"listen": f'LISTEN "{OUTBOX_NOTIFY_CHANNEL}"'}))
+        statement = text("SELECT pid FROM pg_stat_activity WHERE query = :listen")
+        return set(await connection.scalars(statement, {"listen": f'LISTEN "{OUTBOX_NOTIFY_CHANNEL}"'}))
 
 
 async def test_run_relay_wakes_up_on_notify(db: Database, settings: Settings, rabbitmq_url: str) -> None:
@@ -143,11 +143,42 @@ async def test_run_relay_wakes_up_on_notify(db: Database, settings: Settings, ra
     try:  # whatever fails, no relay may outlive the test in the session's event loop
         async with asyncio.timeout(10):
             while True:
-                if await listening(db):
+                if await listen_pids(db):
                     break
                 await asyncio.sleep(0.05)
         await purge_queue(rabbitmq_url)
         await add_events(db, 1, notify=True)  # the relay's first pass over the outbox, right after LISTEN, may take it
+        await asyncio.wait_for(queued_message_ids(rabbitmq_url, 1), timeout=5)
+        events = await add_events(db, 1, notify=True)  # that pass is over: only the NOTIFY can beat the 30 s poll
+        ids = await asyncio.wait_for(queued_message_ids(rabbitmq_url, 1), timeout=5)
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=10)
+    assert ids == [str(events[0].id)]
+
+
+async def test_run_relay_listens_again_after_its_connection_is_lost(
+    db: Database, settings: Settings, rabbitmq_url: str
+) -> None:
+    settings = settings.model_copy(update={"rabbitmq_url": rabbitmq_url, "outbox_poll_interval": 30.0})
+    stop = asyncio.Event()
+    task = asyncio.create_task(run_relay(settings, stop))
+    try:  # whatever fails, no relay may outlive the test in the session's event loop
+        async with asyncio.timeout(10):
+            while True:
+                if lost := await listen_pids(db):
+                    break
+                await asyncio.sleep(0.05)
+            async with db.engine.connect() as connection:  # what a database restart does to the relay's connection
+                await connection.execute(
+                    text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'LISTEN%'")
+                )
+            while True:
+                if await listen_pids(db) - lost:  # a new LISTEN session, long before the 30 s poll is due
+                    break
+                await asyncio.sleep(0.05)
+        await purge_queue(rabbitmq_url)
+        await add_events(db, 1, notify=True)  # the relay's pass over the outbox, right after LISTEN, may take it
         await asyncio.wait_for(queued_message_ids(rabbitmq_url, 1), timeout=5)
         events = await add_events(db, 1, notify=True)  # that pass is over: only the NOTIFY can beat the 30 s poll
         ids = await asyncio.wait_for(queued_message_ids(rabbitmq_url, 1), timeout=5)

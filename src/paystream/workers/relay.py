@@ -35,6 +35,19 @@ async def _wait_any(events: tuple[asyncio.Event, ...], seconds: float) -> None:
             waiter.cancel()
 
 
+async def _listen(settings: Settings, wakeup: asyncio.Event, stop: asyncio.Event) -> asyncpg.Connection:
+    connection = await asyncpg.connect(_asyncpg_dsn(settings.database_url))
+    await connection.add_listener(OUTBOX_NOTIFY_CHANNEL, lambda *_: wakeup.set())
+
+    def lost(_: asyncpg.Connection) -> None:
+        if not stop.is_set():  # asyncpg calls this when run_relay closes the connection too
+            logger.warning("LISTEN connection lost, reconnecting")
+        wakeup.set()  # reconnect now, not after the rest of a possibly long poll interval
+
+    connection.add_termination_listener(lost)
+    return connection
+
+
 async def run_relay(settings: Settings, stop: asyncio.Event) -> None:
     db = Database(settings.database_url)
     broker = build_broker(settings, middlewares=telemetry_middlewares(settings))
@@ -43,15 +56,25 @@ async def run_relay(settings: Settings, stop: asyncio.Event) -> None:
     relay = OutboxRelay(db, broker, batch_size=settings.outbox_batch_size, max_backoff=settings.outbox_max_backoff)
 
     wakeup = asyncio.Event()
-    listener = await asyncpg.connect(_asyncpg_dsn(settings.database_url))
-    await listener.add_listener(OUTBOX_NOTIFY_CHANNEL, lambda *_: wakeup.set())
+    listener = await _listen(settings, wakeup, stop)
     logger.info(
         "outbox relay started (poll every %.1fs, LISTEN %s)", settings.outbox_poll_interval, OUTBOX_NOTIFY_CHANNEL
     )
 
     last_purge = float("-inf")  # time.monotonic() has an arbitrary origin, so 0.0 would delay the first purge
+    warned = False  # one warning per failed-reconnect streak, not one per poll
     try:
         while not stop.is_set():
+            if listener.is_closed():  # a database restart kills LISTEN; until it is back, the poll is all there is
+                try:
+                    listener = await _listen(settings, wakeup, stop)
+                except Exception as exc:  # noqa: BLE001 — however the database is down, keep polling and retry
+                    if not warned:
+                        logger.warning("LISTEN reconnect failed, polling until it succeeds: %r", exc)
+                    warned = True
+                else:
+                    warned = False
+                    logger.info("LISTEN re-established")  # the drain below picks up whatever was missed meanwhile
             wakeup.clear()
             try:
                 await relay.drain()

@@ -10,6 +10,7 @@
       "id": 1, "type": "stat", "title": "Payments created / min",
       "gridPos": { "x": 0, "y": 0, "w": 6, "h": 5 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "green" } } },
       "targets": [{ "refId": "A", "expr": "sum(rate(paystream_payments_created_total[5m])) * 60" }]
     },
     {
