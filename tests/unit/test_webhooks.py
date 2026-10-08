@@ -186,24 +186,38 @@ async def test_error_body_is_read_only_up_to_the_cap() -> None:
     assert served <= 3  # and the receiver's stream is abandoned at the cap, not drained
 
 
-@pytest.mark.parametrize(("chunks", "drained"), [(1, True), (40_960, False)], ids=["short", "20-mb"])
+@pytest.mark.parametrize(
+    ("chunk", "count", "pause", "then", "drained"),
+    [
+        pytest.param(b"x" * 512, 1, 0.0, None, True, id="short"),  # read to its end: the connection is reusable
+        pytest.param(b"x" * 512, 40_960, 0.0, None, False, id="20-mb"),  # abandoned at the cap
+        pytest.param(b"x", 1, 0.0, httpx.ReadError("connection reset"), False, id="body-breaks-off"),
+        pytest.param(b".", 100, 0.2, None, False, id="body-outlasts-the-deadline"),
+    ],
+)
 @respx.mock
-async def test_success_body_is_read_to_its_end_or_up_to_the_cap(chunks: int, drained: bool) -> None:
+async def test_a_2xx_is_a_delivery_however_its_body_ends(
+    chunk: bytes, count: int, pause: float, then: Exception | None, drained: bool
+) -> None:
     served, finished = 0, False
 
     async def body() -> AsyncIterator[bytes]:
         nonlocal served, finished
-        for _ in range(chunks):
+        for _ in range(count):
+            await asyncio.sleep(pause)
             served += 1
-            yield b"x" * 512
+            yield chunk
+        if then is not None:
+            raise then
         finished = True  # only reached when the reader asks for more after the last chunk
 
     respx.post("https://hooks.test/pay").mock(return_value=httpx.Response(200, content=body()))
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(0.25)) as client:  # budget: connect + read = 0.5 s
         result = await make_sender(client).deliver("https://hooks.test/pay", event_id="evt_1", payload={})
-    assert (result.ok, result.status_code) == (True, 200)
-    assert finished is drained  # a short body is read to its end, so the connection can go back to the pool
-    assert served <= 3  # a long one is abandoned at the cap
+    # The status line is the receiver's acknowledgment (Standard Webhooks): nothing its body does takes it back.
+    assert (result.ok, result.status_code, result.error) == (True, 200, None)
+    assert finished is drained
+    assert served <= 3  # never read past the cap
 
 
 @respx.mock

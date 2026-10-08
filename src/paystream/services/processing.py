@@ -51,8 +51,8 @@ def webhook_payload(payment: Payment) -> dict[str, Any]:
 class PaymentProcessor:
     """The single consumer's logic. Every step is safe to repeat: a redelivery never records two outcomes, a finished
     payment never goes to the gateway again, and a retry after a webhook failure only re-sends the webhook. The window
-    between the gateway's answer and the commit (a crash there, or two copies of the message processed at once) is
-    closed in production by the gateway's own idempotency key, the payment id.
+    between the gateway's answer and the commit (a crash there, a failed status commit, or two copies of the message
+    processed at once) is closed in production by the gateway's own idempotency key, the payment id.
 
     1. pending → call the gateway (outside any transaction), then a conditional UPDATE … WHERE status='pending'.
     2. final + webhook_url + not delivered → send the signed webhook, log the attempt, mark delivered on 2xx.

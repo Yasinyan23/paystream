@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import time
 from collections.abc import Callable, Collection, Mapping
@@ -65,6 +66,7 @@ class WebhookSender:
             text = error.replace("\x00", "")[:_MAX_ERROR_CHARS] if error else None  # Postgres text rejects NUL
             return DeliveryResult(ok, status, text, elapsed, permanent)
 
+        delivered: DeliveryResult | None = None
         try:
             async with asyncio.timeout(self._budget):
                 try:
@@ -86,12 +88,16 @@ class WebhookSender:
                 }
                 try:
                     async with self._client.stream("POST", url, content=body, headers=headers) as response:
-                        # Read for a 2xx too: a short body read to its end lets the connection go back to the pool.
-                        excerpt = await _read_excerpt(response)
                         if response.is_success:
-                            return result(True, response.status_code, None)
+                            # The status line is the acknowledgment (Standard Webhooks): whatever the body does next
+                            # cannot undo the delivery. It is read only so a short one lets the connection be reused.
+                            delivered = result(True, response.status_code, None)
+                            with contextlib.suppress(httpx.HTTPError):
+                                await _read_excerpt(response)
+                            return delivered
+                        excerpt = await _read_excerpt(response)
                         return result(False, response.status_code, f"HTTP {response.status_code}: {excerpt}")
                 except httpx.HTTPError as exc:
                     return result(False, None, f"{type(exc).__name__}: {exc}")
         except TimeoutError:
-            return result(False, None, f"TimeoutError: no complete response within {self._budget}s")
+            return delivered or result(False, None, f"TimeoutError: no complete response within {self._budget}s")
