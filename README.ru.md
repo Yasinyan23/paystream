@@ -228,6 +228,7 @@ webhook-signature: v1,eLI9tmGcELKX52m8IvjrB+gl1pbk/LFKv7TOdnXBuyA=
 ```python
 import base64, hashlib, hmac, time
 
+
 def verify(secret: str, headers: dict[str, str], body: bytes, tolerance: int = 300) -> bool:
     msg_id, ts = headers["webhook-id"], headers["webhook-timestamp"]
     if abs(time.time() - int(ts)) > tolerance:

@@ -224,6 +224,7 @@ Verify it with any [Standard Webhooks](https://www.standardwebhooks.com) library
 ```python
 import base64, hashlib, hmac, time
 
+
 def verify(secret: str, headers: dict[str, str], body: bytes, tolerance: int = 300) -> bool:
     msg_id, ts = headers["webhook-id"], headers["webhook-timestamp"]
     if abs(time.time() - int(ts)) > tolerance:
