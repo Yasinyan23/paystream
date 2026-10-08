@@ -32,14 +32,15 @@ A gateway decline (10 % by default in the emulation, `GATEWAY_SUCCESS_RATE`) is 
 
 ## Consequences
 
-- A redelivery of a payment that has left `pending` never calls the gateway again, and a retry after a webhook failure
-  re-sends only the webhook.
+- A redelivery never records a second outcome, a payment that has left `pending` never goes to the gateway again, and a
+  retry after a webhook failure re-sends only the webhook.
 - The webhook id is derived from the payment id and its final status, so receivers can deduplicate on `webhook-id`.
-- Remaining window: two duplicates processed at the very same moment can both call the gateway and both send the
-  webhook. Only one status wins; both webhooks carry it, under the same `webhook-id`
-  (`tests/integration/test_processing.py::test_concurrent_duplicates_agree_on_one_outcome`). A real gateway would close
-  the double call with an idempotency key (`payment_id`); the emulation does not need one. Receivers deduplicate the
-  webhooks on `webhook-id`.
+- Remaining window: between the gateway's answer and the commit of the status. A consumer that crashes there, or two
+  copies of the message processed at the very same moment, call the gateway twice for one payment. Only one status is
+  recorded; two copies at once both send the webhook, with that status and under the same `webhook-id`
+  (`tests/integration/test_processing.py::test_concurrent_duplicates_agree_on_one_outcome`). In production the
+  gateway's own idempotency key, the payment id, closes this window; the emulation does not need one. Receivers
+  deduplicate the webhooks on `webhook-id`.
 - No inbox table is needed: the payment row itself is the deduplication state.
 
 ## Alternatives considered

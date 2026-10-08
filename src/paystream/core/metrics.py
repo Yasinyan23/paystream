@@ -17,6 +17,10 @@ OUTBOX_LAG_SECONDS = Histogram(
     buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60),
 )
 MESSAGES_RETRIED = Counter("paystream_messages_retried_total", "Messages sent to a retry tier", ["delay_ms"])
-MESSAGES_DEAD_LETTERED = Counter("paystream_messages_dead_lettered_total", "Messages sent to the DLQ", ["reason"])
+MESSAGES_DEAD_LETTERED = Counter(
+    "paystream_messages_dead_lettered_total",
+    "Dead letters published by the consumer; RabbitMQ's own delivery-limit dead-letters are not counted",
+    ["reason"],
+)
 HTTP_REQUESTS = Counter("paystream_http_requests_total", "HTTP requests", ["method", "route", "status"])
 HTTP_SECONDS = Histogram("paystream_http_request_seconds", "HTTP request duration", ["method", "route"])

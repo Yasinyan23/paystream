@@ -21,6 +21,10 @@ in-process `asyncio.sleep` backoff holds the message and its prefetch slot for t
   original. After the last attempt it publishes to `payments.dlx → payments.dead` with
   `x-dead-reason: max_attempts_exceeded`, `x-error`, `x-attempt`, `x-failed-at`, then acks. The message's own headers
   (correlation id, trace context) survive each hop; RabbitMQ's bookkeeping (`x-death` and the like) does not.
+- An unreachable database is an infrastructure failure, not the message's: a refused or lost connection, an unknown
+  host, a server that is shutting down or starting up. Then the copy goes to the longest tier with `x-attempt`
+  unchanged (a warning in the log, counted in `paystream_messages_retried_total` like any retry), as many times as the
+  outage lasts, so a backlog waits it out instead of using up its attempts and landing in the DLQ within seconds.
 - A permanent failure skips the tiers and goes to the DLQ at once, with the attempt it happened on in `x-attempt` and
   the reason in `x-dead-reason`: `invalid_message`, `unsupported_event`, `invalid_event` and `payment_not_found`
   ([ADR 0003](0003-at-least-once-idempotent-consumer.md)), or `webhook_rejected` (the webhook URL failed the SSRF check,
@@ -31,7 +35,9 @@ in-process `asyncio.sleep` backoff holds the message and its prefetch slot for t
   ([ADR 0006](0006-quorum-queues.md)).
 - `paystream dlq replay (--message-id ID | --all)` publishes dead letters back to `payments` with a fresh attempt
   counter (`x-attempt = 1`) and an `x-replayed-at` timestamp, without the dead-letter headers, and acks each one only
-  after the publish is confirmed.
+  after the publish is confirmed. One invocation looks only at the messages in the DLQ when it starts, each at most
+  once: a message that fails again at once, an invalid one for instance, lands at the tail of the DLQ and waits for the
+  next invocation. `--all` replays at most `--limit` (1000 by default) and says how many it left.
 
 ## Consequences
 

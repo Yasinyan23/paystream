@@ -33,6 +33,14 @@ must not be redelivered forever.
   whose reason is `delivery_limit` and no `x-dead-reason`; `dlq list` shows `delivery_limit` as its reason.
 - The limit covers what the consumer cannot count itself: `x-attempt` only grows when the consumer lives to publish a
   retry copy, never when it dies.
+- During a database outage neither bound applies, on purpose: the consumer spends no attempt on it
+  ([ADR 0004](0004-exponential-retry-ttl-queues.md)), and each wait in a retry tier is a new message to the delivery
+  limit. Events go round the longest tier until the database is back instead of filling the DLQ.
+- RabbitMQ's own dead-lettering, at the delivery limit and on each expiry in a retry tier, is at-most-once by default:
+  the broker moves the message without publisher confirms and can lose it if the target queue cannot take it. On a
+  single node, as in the compose stack, that is fine. A cluster needs `x-dead-letter-strategy: at-least-once` and
+  `x-overflow: reject-publish` on `payments.new` and on the retry tiers, which then have to be quorum queues as well
+  (only quorum queues dead-letter at-least-once). Not implemented.
 - The counting rules belong to the broker, not to this code. The compose file and the tests run RabbitMQ 4
   (`rabbitmq:4-management-alpine`), and the integration tests pin the `reject` path
   (`tests/integration/test_consumer.py::test_crash_loop_is_dead_lettered_at_the_delivery_limit` and

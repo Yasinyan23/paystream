@@ -55,7 +55,7 @@ class PaymentRepository:
         return await self._session.scalar(select(Payment).where(Payment.idempotency_key == key))
 
     async def complete(self, payment_id: UUID, *, status: PaymentStatus, failure_reason: str | None) -> bool:
-        """Move pending → final exactly once. Returns False if the payment was already final."""
+        """Move pending → final exactly once. Returns False if the payment was already final or does not exist."""
         if not status.is_final:
             raise ValueError(f"status must be final, got {status}")
         result = await self._session.execute(

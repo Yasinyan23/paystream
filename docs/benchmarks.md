@@ -11,8 +11,8 @@ Load-test results for the compose stack, produced with `scripts/loadtest.py`. Th
 
 - **Accept** is the client's clock from sending `POST /api/v1/payments` until the `202` arrives.
 - **End-to-end** is `processed_at - created_at` of each payment as `GET /api/v1/payments/{id}` returns it: from the API inserting the payment to the consumer storing the gateway result. Postgres stamps both at transaction start, so neither polling nor the network is part of it. **Throughput** is the number of payments divided by the time from the first `created_at` to the last `processed_at`.
-- In the first scenario the end-to-end time is queue wait: one consumer is the bottleneck. In the second the pipeline keeps up, and the accept rate is capped by the macOS host's path into Docker Desktop, not by the service; see [Where the host path saturates](#where-the-host-path-saturates).
-- All 23,500 payments created for this document (repeats and one aborted attempt included) reached a final status, the outbox was fully published, `payments.dead` stayed empty, and the API answered every request with a success status (`202` for creates, `200` for polls).
+- In the first scenario the end-to-end time is queue wait: one consumer is the bottleneck. In the second the pipeline keeps up, and the accept rate is capped by the macOS host's path into Docker Desktop, not by the service, so its throughput is the offered load, not a limit: the pipeline sustains about 355 payments/s in the sweep; see [Where the host path saturates](#where-the-host-path-saturates).
+- All 23,500 payments created for this document (repeats and one aborted attempt included) reached a final status, the outbox was fully published, `payments.dead` stayed empty, and the API's request counter shows only `202` (creates) and `200` (polls).
 
 ## Conditions
 
@@ -84,11 +84,13 @@ Fast gateway, 3 consumers, 1000 payments per run, on the same stack as run 2. Ea
 ## Reproduce
 
 ```bash
+make down                                # no stack left over: deletes the volumes
 make up                                  # fresh stack, empty database
 make load                                # run 1
 
 GATEWAY_MIN_DELAY=0.05 GATEWAY_MAX_DELAY=0.1 docker compose up -d --scale consumer=3
 until curl -sf localhost:8000/ready >/dev/null; do sleep 1; done
+until docker compose exec -T rabbitmq rabbitmqctl -q list_queues name consumers | grep -q '^payments\.new[[:space:]]*3$'; do sleep 1; done
 uv run python scripts/loadtest.py --payments 1000 --concurrency 100    # run 2
 
 # concurrency sweep from the host
@@ -119,4 +121,4 @@ where created_at between :'from' and :'to' and status <> 'pending';
 SQL
 ```
 
-Across the 19 runs checked while writing this file the mean and the throughput were identical to the script's. The script's percentiles are nearest-rank and the query's are interpolated, which moved p50 by at most 0.07 s and p95 by at most 0.02 s.
+Of the runs behind this file, 17 have both outputs saved, the script's and the query's: in every one the mean, the throughput and p50 are identical, and p95 differs by at most 0.01 s (the script's percentiles are nearest-rank, the query's interpolated).

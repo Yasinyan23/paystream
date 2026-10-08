@@ -2,7 +2,6 @@ from fastapi import APIRouter, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from paystream.api.deps import require_api_key
-from paystream.core.metrics import OUTBOX_PENDING  # noqa: F401 — ensure metrics module is imported
 
 router = APIRouter(tags=["ops"])
 

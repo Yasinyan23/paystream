@@ -2,8 +2,9 @@
 
 Accept latency is measured by the client around POST /api/v1/payments. End-to-end latency and throughput come from the
 server's own timestamps (`created_at`, `processed_at`, both stamped by Postgres), so how often the client polls does
-not affect them. End-to-end time is dominated by the emulated gateway (2-5 s). For a throughput run start the stack
-with GATEWAY_MIN_DELAY=0.05 GATEWAY_MAX_DELAY=0.1 and scale consumers: docker compose up -d --scale consumer=3
+not affect them. End-to-end time is the emulated gateway call (2-5 s) plus the wait in the queue behind earlier
+payments, which dominates once a burst outruns the consumers. For a throughput run start the stack with
+GATEWAY_MIN_DELAY=0.05 GATEWAY_MAX_DELAY=0.1 and scale consumers: docker compose up -d --scale consumer=3
 """
 
 import argparse

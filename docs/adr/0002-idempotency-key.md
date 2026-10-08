@@ -11,11 +11,13 @@ retries must not race, and a key reused for a *different* payment must not silen
 ## Decision
 
 Modelled on the IETF draft [*The Idempotency-Key HTTP Header Field*](https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/),
-with two deliberate differences: the key is an opaque string, and a concurrent duplicate waits instead of getting `409`.
+with three deliberate differences: the key is an opaque string, a replay returns the payment as it is now instead of
+the first response, and a concurrent duplicate waits instead of getting `409`.
 
-- The header is required. Missing → `400` (problem type `urn:paystream:problem:idempotency-key-missing`); a value that
-  is not 1–255 printable ASCII characters (space excluded) → `400` (`idempotency-key-invalid`). The draft specifies a
-  quoted Structured Fields string; this service does not parse one and takes the value as it is.
+- The header is required, and the OpenAPI document marks it so. Missing → `400` (problem type
+  `urn:paystream:problem:idempotency-key-missing`); a value that is not 1–255 printable ASCII characters (space
+  excluded) → `400` (`idempotency-key-invalid`). The draft specifies a quoted Structured Fields string; this service
+  does not parse one and takes the value as it is.
 - The body is validated before the key is looked up: `amount` of at least 0.01 with at most 2 decimal places and 18
   digits; `metadata` of at most 16 KB (16,384 bytes) as UTF-8 JSON and at most 32 levels deep, without NUL, lone
   surrogates, NaN or Infinity. A body that fails gets `422` (`validation-error`) and writes nothing, so it cannot
@@ -25,8 +27,10 @@ with two deliberate differences: the key is an opaque string, and a concurrent d
   the order of keys in the request does not matter. The fingerprint is stored in `payments.request_hash`.
 - `INSERT … ON CONFLICT (idempotency_key) DO NOTHING RETURNING *` creates the payment. The unique index is the only
   arbiter; there is no check-then-insert window.
-- On conflict the stored payment is read: same fingerprint → `202` with the stored payment and
-  `Idempotent-Replayed: true`; different fingerprint → `422` (`idempotency-key-reused`).
+- On conflict the stored payment is read: same fingerprint → `202` with the payment as it is now, its current status
+  included, and `Idempotent-Replayed: true`; different fingerprint → `422` (`idempotency-key-reused`). No response is
+  stored: the draft has a retry answered with the result of the original request, this service answers with the
+  payment's current state.
 - A concurrent duplicate is not rejected: PostgreSQL blocks its `INSERT` until the first request commits, and it then
   takes the replay path. The draft suggests `409 Conflict` for a request whose twin is still in flight; this service
   never returns it.

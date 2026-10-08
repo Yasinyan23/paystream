@@ -27,8 +27,10 @@ came from us, and we must not let the URL point into our own network.
 - Timeouts: connect 3 s and read 5 s (`WEBHOOK_CONNECT_TIMEOUT`, `WEBHOOK_READ_TIMEOUT`), plus one deadline of connect +
   read (8 s by default) for the whole delivery, URL check and response included, so a receiver that sends a byte every
   few seconds cannot hold a worker.
-- Of a failed response, about 1 KiB is read, raw (`Accept-Encoding: identity`), and the rest of the stream is abandoned.
-  The stored error is at most 1,024 characters and has NUL removed, which a Postgres text column rejects.
+- Of any response, at most about 1 KiB of body is read, raw (`Accept-Encoding: identity`), and the rest of the stream
+  is abandoned; a shorter body is read to its end, which lets the connection go back to the pool. For a failed
+  response the excerpt goes into the stored error, which is at most 1,024 characters and has NUL removed, which a
+  Postgres text column rejects.
 - A refused URL is a permanent failure (straight to the DLQ as `webhook_rejected`); DNS errors, connection errors,
   timeouts and non-2xx responses are transient (retried, [ADR 0004](0004-exponential-retry-ttl-queues.md)).
 

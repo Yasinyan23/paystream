@@ -58,7 +58,9 @@ def retry_queue(delay_ms: int) -> RabbitQueue:
 
 
 async def declare_topology(broker: RabbitBroker, settings: Settings) -> None:
-    """Declare every exchange, queue and binding. Safe to call from every process, any number of times."""
+    """Declare every exchange, queue and binding. Safe to call from every process, any number of times, as long as
+    they all use the same DELIVERY_LIMIT: RabbitMQ refuses to declare payments.new again with another
+    `x-delivery-limit` (PRECONDITION_FAILED), and the process fails to start."""
     bindings = [
         (payments_queue(settings.delivery_limit), PAYMENTS_EXCHANGE),
         (DEAD_QUEUE, DEAD_LETTER_EXCHANGE),
