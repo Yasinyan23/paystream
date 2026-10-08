@@ -1,7 +1,9 @@
-"""Load test: create N payments with C in flight, then measure time until each reaches a final status.
+"""Load test: create N payments with C in flight, then wait until each reaches a final status.
 
-End-to-end time is dominated by the emulated gateway (2-5 s). For a throughput run start the stack with
-GATEWAY_MIN_DELAY=0.05 GATEWAY_MAX_DELAY=0.1 and scale consumers: docker compose up -d --scale consumer=3
+Accept latency is measured by the client around POST /api/v1/payments. End-to-end latency and throughput come from the
+server's own timestamps (`created_at`, `processed_at`, both stamped by Postgres), so how often the client polls does
+not affect them. End-to-end time is dominated by the emulated gateway (2-5 s). For a throughput run start the stack
+with GATEWAY_MIN_DELAY=0.05 GATEWAY_MAX_DELAY=0.1 and scale consumers: docker compose up -d --scale consumer=3
 """
 
 import argparse
@@ -9,6 +11,7 @@ import asyncio
 import statistics
 import time
 import uuid
+from datetime import datetime
 
 import httpx
 
@@ -25,7 +28,7 @@ async def run(base_url: str, api_key: str, payments: int, concurrency: int) -> N
     ) as client:
         gate = asyncio.Semaphore(concurrency)
         accept: list[float] = []
-        created: dict[str, float] = {}
+        pending: set[str] = set()
 
         async def create_one(n: int) -> None:
             async with gate:
@@ -37,25 +40,31 @@ async def run(base_url: str, api_key: str, payments: int, concurrency: int) -> N
                 )
                 response.raise_for_status()
                 accept.append(time.perf_counter() - started)
-                created[response.json()["payment_id"]] = time.perf_counter()
+                pending.add(response.json()["payment_id"])
 
         wall = time.perf_counter()
         await asyncio.gather(*(create_one(n) for n in range(payments)))
         accept_wall = time.perf_counter() - wall
 
-        end_to_end: list[float] = []
-        pending = dict(created)
+        finished: list[tuple[datetime, datetime]] = []  # (created_at, processed_at) as stored by the server
         while pending:
             await asyncio.sleep(0.25)
 
             async def check(payment_id: str) -> None:
                 async with gate:
-                    status = (await client.get(f"/api/v1/payments/{payment_id}")).json()["status"]
-                if status != "pending":
-                    end_to_end.append(time.perf_counter() - pending.pop(payment_id))
+                    response = await client.get(f"/api/v1/payments/{payment_id}")
+                response.raise_for_status()
+                payment = response.json()
+                if payment["status"] != "pending":
+                    finished.append(
+                        (datetime.fromisoformat(payment["created_at"]), datetime.fromisoformat(payment["processed_at"]))
+                    )
+                    pending.remove(payment_id)
 
             await asyncio.gather(*(check(pid) for pid in list(pending)))
-        total_wall = time.perf_counter() - wall
+
+    end_to_end = [(processed - created).total_seconds() for created, processed in finished]
+    span = (max(processed for _, processed in finished) - min(created for created, _ in finished)).total_seconds()
 
     print(f"payments: {payments}, concurrency: {concurrency}")
     print(
@@ -64,7 +73,7 @@ async def run(base_url: str, api_key: str, payments: int, concurrency: int) -> N
     )
     print(
         f"e2e     p50 {pct(end_to_end, 0.5):7.2f} s    p95 {pct(end_to_end, 0.95):7.2f} s    "
-        f"mean {statistics.fmean(end_to_end):5.2f} s   throughput {payments / total_wall:6.1f} payments/s"
+        f"mean {statistics.fmean(end_to_end):5.2f} s   throughput {payments / span:6.1f} payments/s"
     )
 
 
