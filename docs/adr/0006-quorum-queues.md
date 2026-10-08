@@ -6,12 +6,15 @@
 ## Context
 
 `payments.new` holds work that must survive a broker node failure, and a message that crashes the consumer process
-must not be redelivered forever.
+must not be redelivered forever. The compose stack runs a single RabbitMQ node, so replication only takes effect in
+a cluster.
 
 ## Decision
 
 - `payments.new` is a **quorum** queue (Raft-replicated, durable) with `x-delivery-limit` taken from `DELIVERY_LIMIT`
-  (10 by default) and `x-dead-letter-exchange=payments.dlx` (routing key `payment.dead`). Once a message has been
+  (10 by default; every process must declare the same value, and changing it means recreating `payments.new`, because
+  RabbitMQ refuses to redeclare a queue with different arguments) and `x-dead-letter-exchange=payments.dlx` (routing key
+  `payment.dead`). Once a message has been
   returned to the queue more often than the limit, RabbitMQ dead-letters it by itself with the reason `delivery_limit`:
   after 11 deliveries with the default.
 - What counts as a return depends on how the message is given back. On RabbitMQ 4.3 (checked on 4.3.6) a `reject` with

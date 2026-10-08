@@ -41,7 +41,8 @@ to the webhook call.
   is idempotent ([ADR 0003](0003-at-least-once-idempotent-consumer.md)), so duplicates are harmless.
 - Publishing does not wait for the polling interval: the relay wakes on NOTIFY as soon as the transaction commits
   (`tests/integration/test_outbox_relay.py::test_run_relay_wakes_up_on_notify` runs it with a 30 s interval and expects
-  the message within 5 s). The interval only matters when a notification is missed.
+  the message within 5 s). The interval only matters when a notification is missed
+  and for retrying a failed publish, which is rescheduled into the future where a NOTIFY cannot reach it.
 - Events are not ordered: relay replicas, retries after a failed publish and a concurrent consumer can all reorder them.
   Nothing relies on order: each payment has exactly one event and the consumer works from the payment row.
 - `paystream_outbox_pending_events` (rows not yet published) and `paystream_outbox_publish_lag_seconds` (time from
@@ -51,5 +52,5 @@ to the webhook call.
 
 - **Publish from the API after commit**: loses the event if the process dies between commit and publish. Rejected.
 - **CDC (Debezium) instead of a relay**: log-based, so no polling or `NOTIFY`, but it adds Kafka Connect or a Debezium
-  server to a service whose stack the [task brief](../task.md) fixes. Not implemented.
+  server to a service whose stack the [task brief](../task.md) (in Russian) fixes. Not adopted.
 - **Polling only** (no `LISTEN`): simpler, but every event waits up to one polling interval before it is published.

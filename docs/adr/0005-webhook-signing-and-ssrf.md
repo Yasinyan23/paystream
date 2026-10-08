@@ -13,7 +13,8 @@ came from us, and we must not let the URL point into our own network.
 - Sign per the [**Standard Webhooks**](https://www.standardwebhooks.com) specification: headers `webhook-id`,
   `webhook-timestamp` (Unix seconds), `webhook-signature: v1,<base64 HMAC-SHA256 of "id.timestamp.body">`, secret
   `whsec_…` (`WEBHOOK_SIGNING_SECRET`; the consumer refuses to start without it). The signed body is the exact bytes
-  that are sent. The implementation is checked against the specification's reference test vector
+  that are sent. The implementation is checked against the reference test vector used by the Standard
+  Webhooks libraries
   (`tests/unit/test_webhooks.py::test_sign_matches_reference_vector`).
 - `webhook-id` is stable across retries of the same event: it is derived from the payment id and its status.
 - Before **every** delivery: only `http`/`https`; resolve the host and refuse if any address is not global according to

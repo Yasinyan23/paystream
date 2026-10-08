@@ -27,7 +27,7 @@ The single consumer handler is a resumable state machine. Every step is safe to 
    [ADR 0004](0004-exponential-retry-ttl-queues.md)) or dead-lettered. If the broker refuses that publish, the message
    goes back to the queue instead ([ADR 0006](0006-quorum-queues.md)).
 
-A gateway decline (10 % by default in the emulation, `GATEWAY_SUCCESS_RATE`) is a business outcome (`failed` +
+A gateway decline (10 % by default in the emulated payment gateway, `GATEWAY_SUCCESS_RATE`) is a business outcome (`failed` +
 `failure_reason`), never a retry.
 
 ## Consequences
@@ -35,11 +35,13 @@ A gateway decline (10 % by default in the emulation, `GATEWAY_SUCCESS_RATE`) is 
 - A redelivery never records a second outcome, a payment that has left `pending` never goes to the gateway again, and a
   retry after a webhook failure re-sends only the webhook.
 - The webhook id is derived from the payment id and its final status, so receivers can deduplicate on `webhook-id`.
-- Remaining window: between the gateway's answer and the commit of the status. A consumer that crashes there, a failed
-  status commit, or two copies of the message processed at the very same moment mean a second gateway call for the
-  same payment. Only one status is recorded; two copies at once both send the webhook, with that status and under the
-  same `webhook-id` (`tests/integration/test_processing.py::test_concurrent_duplicates_agree_on_one_outcome`). In
-  production the gateway's own idempotency key, the payment id, closes this window; the emulation does not need one.
+- Remaining window: from the charge request until the status commit. A consumer that crashes while the gateway call
+  is in flight or before the commit, a failed status commit, or two copies of the message processed at the very same
+  moment mean a second gateway call for the same payment. Only one status is recorded; two copies at once can both
+  send the webhook, with that status and under the
+  same `webhook-id` (`tests/integration/test_processing.py::test_concurrent_duplicates_agree_on_one_outcome`). A real
+  gateway that receives the payment id as its idempotency key would close this window; the emulated gateway does not
+  need one.
   Receivers deduplicate the webhooks on `webhook-id`.
 - No inbox table is needed: the payment row itself is the deduplication state.
 
@@ -47,4 +49,4 @@ A gateway decline (10 % by default in the emulation, `GATEWAY_SUCCESS_RATE`) is 
 
 - **Inbox table keyed by message_id**: duplicates the information already in the payment's status. Rejected (YAGNI).
 - **Advisory lock per payment**: closes the concurrent-duplicate window but serializes on Postgres for a rare case.
-  Not implemented.
+  Not adopted.

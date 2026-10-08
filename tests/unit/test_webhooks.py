@@ -11,7 +11,7 @@ from paystream.webhooks.sender import WebhookSender, build_http_client
 from paystream.webhooks.signing import InvalidSignatureError, generate_secret, sign, verify
 from paystream.webhooks.ssrf import UnsafeWebhookURLError, ensure_public_url
 
-# Reference vector from the Standard Webhooks specification.
+# Reference vector used by the Standard Webhooks libraries' own tests.
 SECRET = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"
 MSG_ID = "msg_p5jXN8AQM9LWM0D4loKWxJek"
 TIMESTAMP = 1614265330

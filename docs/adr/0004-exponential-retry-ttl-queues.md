@@ -5,7 +5,7 @@
 
 ## Context
 
-The task brief ([docs/task.md](../task.md)) asks for 3 attempts with exponential delay and a dead-letter queue
+The task brief ([docs/task.md](../task.md), in Russian) asks for 3 attempts with exponential delay and a dead-letter queue
 afterwards. The two simple implementations fall short: one retry queue with a fixed delay is not exponential, and an
 in-process `asyncio.sleep` backoff holds the message and its prefetch slot for the whole wait.
 
@@ -52,7 +52,10 @@ in-process `asyncio.sleep` backoff holds the message and its prefetch slot for t
 - **Per-message TTL in one retry queue**: RabbitMQ expires messages only at the head of a queue, so a 4 s message
   blocks a 2 s one behind it. Rejected.
 - **rabbitmq-delayed-message-exchange plugin**: not shipped with RabbitMQ (the official image does not include it),
-  and it keeps delayed messages in a single node-local Mnesia table, so they are not replicated. Rejected.
-- **Requeue** (`reject` with `requeue=True`): the broker redelivers at once, so there is no delay at all, and on a
+  and it keeps delayed messages in a single node-local Mnesia table, so they are not replicated; the RabbitMQ team no
+  longer maintains it. Rejected.
+- **Quorum-queue delayed retry** (RabbitMQ 4.3+, `x-delayed-retry-*` arguments): the delay grows linearly with the
+  delivery count instead of exponentially as the brief asks, and the feature is off by default. Rejected.
+- **Requeue** (`reject` with `requeue=True`): by default the broker redelivers at once, so there is no delay at all, and on a
   quorum queue every such return counts toward the delivery limit ([ADR 0006](0006-quorum-queues.md)). Rejected as a
   retry mechanism; the consumer requeues only when it cannot publish a retry or dead-letter copy.
