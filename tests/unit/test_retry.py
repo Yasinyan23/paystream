@@ -47,6 +47,17 @@ async def test_retry_hop_keeps_our_headers_and_drops_the_brokers() -> None:
     assert published["headers"] == {"x-attempt": 3, "traceparent": TRACEPARENT, "x-last-error": "boom"}
 
 
+async def test_outage_waits_in_the_longest_tier_without_spending_the_attempt() -> None:
+    broker = RecordingBroker()
+    retried = await RetryPublisher(broker, DELAYS).retry_or_dead_letter(
+        body={}, message_id="m-1", correlation_id=None, headers=INCOMING, attempt=3, error="down", spend_attempt=False
+    )
+    [published] = broker.published
+    assert retried  # even on the last attempt: no dead letter
+    assert (published["exchange"].name, published["routing_key"]) == ("payments.retry", "retry.4000")
+    assert published["headers"]["x-attempt"] == 3
+
+
 async def test_dead_letter_keeps_our_headers_and_drops_the_brokers() -> None:
     broker = RecordingBroker()
     await RetryPublisher(broker, DELAYS).dead_letter(

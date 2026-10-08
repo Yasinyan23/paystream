@@ -14,7 +14,7 @@ from prometheus_client import REGISTRY, start_http_server
 from paystream.core.config import Settings, get_settings
 from paystream.core.logging import configure_logging
 from paystream.core.telemetry import configure_tracing, instrument_database
-from paystream.db.database import Database
+from paystream.db.database import Database, database_unavailable
 from paystream.domain.events import EventEnvelope
 from paystream.gateway.simulated import PaymentGateway, SimulatedGateway
 from paystream.messaging.broker import build_broker, telemetry_middlewares
@@ -103,7 +103,14 @@ async def handle_delivery(
             except PermanentProcessingError as exc:
                 await retries.dead_letter(**route, reason=exc.reason, error=str(exc), attempt=attempt)
             except Exception as exc:  # noqa: BLE001 — anything else is worth a retry
-                await retries.retry_or_dead_letter(**route, attempt=attempt, error=f"{type(exc).__name__}: {exc}")
+                # An unreachable database is an outage, not the message's fault: spending attempts on it would send
+                # the whole backlog to the DLQ within seconds.
+                await retries.retry_or_dead_letter(
+                    **route,
+                    attempt=attempt,
+                    error=f"{type(exc).__name__}: {exc}",
+                    spend_attempt=not database_unavailable(exc),
+                )
             else:
                 logger.info("message %s attempt %d processed", message.message_id, attempt)
     except Exception:

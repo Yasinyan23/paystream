@@ -21,7 +21,7 @@ def next_retry_delay_ms(attempt: int, delays_ms: Sequence[int]) -> int | None:
     return delays_ms[attempt - 1] if 1 <= attempt <= len(delays_ms) else None
 
 
-def _carry(headers: Mapping[str, Any]) -> dict[str, Any]:
+def carry_headers(headers: Mapping[str, Any]) -> dict[str, Any]:
     """Our headers survive a hop; RabbitMQ's own bookkeeping does not: it would be stale on the next queue."""
     return {k: v for k, v in headers.items() if not k.startswith(_BROKER_HEADER_PREFIXES)}
 
@@ -39,8 +39,17 @@ class RetryPublisher:
         headers: Mapping[str, Any],
         attempt: int,
         error: str,
+        spend_attempt: bool = True,
     ) -> bool:
-        delay = next_retry_delay_ms(attempt, self._delays_ms)
+        """Publish a copy to the retry tier for this attempt, or to the DLQ once the attempts are used up.
+
+        `spend_attempt=False` is for an infrastructure failure, an unreachable database, which is not the message's
+        fault: the copy keeps its attempt number and waits in the longest tier, as many times as the outage lasts.
+        """
+        if spend_attempt:
+            delay, next_attempt = next_retry_delay_ms(attempt, self._delays_ms), attempt + 1
+        else:  # with RETRY_MAX_ATTEMPTS=1 there is no tier to wait in: the message is dead-lettered as usual
+            delay, next_attempt = max(self._delays_ms, default=None), attempt
         if delay is None:
             await self.dead_letter(
                 body=body,
@@ -59,10 +68,19 @@ class RetryPublisher:
             routing_key=retry_routing_key(delay),
             message_id=message_id,
             correlation_id=correlation_id,
-            headers={**_carry(headers), ATTEMPT_HEADER: attempt + 1, "x-last-error": error[:500]},
+            headers={**carry_headers(headers), ATTEMPT_HEADER: next_attempt, "x-last-error": error[:500]},
         )
         MESSAGES_RETRIED.labels(str(delay)).inc()
-        logger.info("message %s attempt %d failed, retrying in %d ms: %s", message_id, attempt, delay, error)
+        if spend_attempt:
+            logger.info("message %s attempt %d failed, retrying in %d ms: %s", message_id, attempt, delay, error)
+        else:
+            logger.warning(
+                "message %s attempt %d: database unavailable, retrying in %d ms without spending the attempt: %s",
+                message_id,
+                attempt,
+                delay,
+                error,
+            )
         return True
 
     async def dead_letter(
@@ -84,7 +102,7 @@ class RetryPublisher:
             message_id=message_id,
             correlation_id=correlation_id,
             headers={
-                **_carry(headers),
+                **carry_headers(headers),
                 ATTEMPT_HEADER: attempt,
                 "x-dead-reason": reason,
                 "x-error": error[:1000],

@@ -118,6 +118,12 @@ async def test_missing_idempotency_key_is_400(client: AsyncClient) -> None:
     assert response.json()["type"] == "urn:paystream:problem:idempotency-key-missing"
 
 
+async def test_openapi_marks_the_idempotency_key_required(client: AsyncClient) -> None:
+    operation = (await client.get("/openapi.json")).json()["paths"]["/api/v1/payments"]["post"]
+    [header] = [parameter for parameter in operation["parameters"] if parameter["name"] == "Idempotency-Key"]
+    assert (header["in"], header["required"]) == ("header", True)
+
+
 async def test_invalid_idempotency_key_is_400(client: AsyncClient) -> None:
     response = await create(client, "has spaces")
     assert response.status_code == 400

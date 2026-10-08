@@ -5,11 +5,14 @@ from collections.abc import AsyncIterator, Iterator
 import aio_pika
 import pytest
 from aio_pika.exceptions import PublishError
+from faststream import TestApp
 
 from paystream.core.config import Settings, get_settings
 from paystream.messaging.broker import build_broker
 from paystream.messaging.retry import RetryPublisher
 from paystream.messaging.topology import (
+    DEAD_LETTER_EXCHANGE,
+    DEAD_LETTER_KEY,
     PAYMENT_CREATED_KEY,
     PAYMENTS_EXCHANGE,
     RETRY_EXCHANGE,
@@ -17,6 +20,7 @@ from paystream.messaging.topology import (
     retry_routing_key,
 )
 from paystream.workers.cli import dlq_list, dlq_replay, main
+from paystream.workers.consumer import build_consumer
 
 pytestmark = pytest.mark.integration
 
@@ -27,6 +31,12 @@ async def purge_queues(url: str) -> None:
         channel = await connection.channel()
         for name in ("payments.new", "payments.dead"):
             await (await channel.declare_queue(name, passive=True)).purge()
+
+
+async def dead_letter_count(url: str) -> int:
+    connection = await aio_pika.connect(url)
+    async with connection, await connection.channel() as channel:
+        return (await channel.declare_queue("payments.dead", passive=True)).declaration_result.message_count
 
 
 @pytest.fixture
@@ -100,7 +110,7 @@ async def test_list_shows_the_delivery_limit_as_reason(broker_dead_letter: str) 
 
 
 async def test_replay_one_message(dead_letters: str) -> None:
-    assert await dlq_replay(dead_letters, message_id="dead-1", limit=100) == 1
+    assert await dlq_replay(dead_letters, message_id="dead-1", limit=100) == (1, 0)
     assert [m["message_id"] for m in await dlq_list(dead_letters, limit=10)] == ["dead-0"]
     connection = await aio_pika.connect(dead_letters)
     async with connection:
@@ -120,7 +130,7 @@ async def test_replay_one_message(dead_letters: str) -> None:
 
 
 async def test_replay_drops_the_brokers_death_bookkeeping(broker_dead_letter: str) -> None:
-    assert await dlq_replay(broker_dead_letter, message_id="loop-1", limit=100) == 1
+    assert await dlq_replay(broker_dead_letter, message_id="loop-1", limit=100) == (1, 0)
     connection = await aio_pika.connect(broker_dead_letter)
     async with connection:
         channel = await connection.channel()
@@ -132,7 +142,7 @@ async def test_replay_drops_the_brokers_death_bookkeeping(broker_dead_letter: st
 
 
 async def test_replay_stops_at_the_limit(dead_letters: str) -> None:
-    assert await dlq_replay(dead_letters, message_id=None, limit=1) == 1
+    assert await dlq_replay(dead_letters, message_id=None, limit=1) == (1, 1)  # replayed, left by the limit
     assert [m["message_id"] for m in await dlq_list(dead_letters, limit=10)] == ["dead-1"]
 
 
@@ -169,6 +179,37 @@ def test_main_replay_all(capsys: pytest.CaptureFixture[str]) -> None:
     assert capsys.readouterr().out.strip() == "[]"
     assert main(["dlq", "replay", "--all"]) == 0  # nothing left to replay is not a failure
     assert "replayed 0" in capsys.readouterr().out
+
+
+@pytest.mark.usefixtures("cli_env")
+def test_main_replay_all_says_how_many_the_limit_left(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["dlq", "replay", "--all", "--limit", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "replayed 1 message(s)" in out
+    assert "1 message(s) left in payments.dead" in out
+
+
+@pytest.mark.usefixtures("cli_env")
+async def test_main_replay_all_replays_each_dead_letter_once_while_the_consumer_runs(
+    dead_letters: str, settings: Settings, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # None of these is a payment event (nor are the fixture's two): the consumer dead-letters every replayed copy
+    # again at once, at the tail of the DLQ. A pass that pulled until the queue looked empty would meet the copies
+    # and replay them again, up to --limit.
+    poison = 40
+    connection = await aio_pika.connect(dead_letters)
+    async with connection, await connection.channel() as channel:
+        dlx = await channel.get_exchange(DEAD_LETTER_EXCHANGE.name)
+        for n in range(2, poison):
+            await dlx.publish(aio_pika.Message(b"{}", message_id=f"dead-{n}"), routing_key=DEAD_LETTER_KEY)
+    async with TestApp(build_consumer(settings.model_copy(update={"rabbitmq_url": dead_letters}))):
+        await asyncio.to_thread(main, ["dlq", "replay", "--all"])  # main() runs its own event loop
+        async with asyncio.timeout(10):  # until every copy is back in the DLQ
+            while True:
+                if await dead_letter_count(dead_letters) == poison:
+                    break
+                await asyncio.sleep(0.1)
+    assert f"replayed {poison} message(s)" in capsys.readouterr().out
 
 
 @pytest.mark.usefixtures("cli_env")

@@ -15,7 +15,7 @@ from typing import Any
 import aio_pika
 
 from paystream.core.config import get_settings
-from paystream.messaging.retry import ATTEMPT_HEADER, _carry
+from paystream.messaging.retry import ATTEMPT_HEADER, carry_headers
 from paystream.messaging.topology import DEAD_QUEUE_NAME, PAYMENT_CREATED_KEY, PAYMENTS_EXCHANGE
 
 _DEAD_LETTER_HEADERS = {"x-dead-reason", "x-error", "x-failed-at", "x-last-error"}
@@ -25,8 +25,9 @@ async def dlq_list(rabbitmq_url: str, *, limit: int) -> list[dict[str, Any]]:
     """Peek without consuming: messages are fetched unacked and return to the queue when the channel closes."""
     connection = await aio_pika.connect(rabbitmq_url)
     items: list[dict[str, Any]] = []
-    async with connection:
-        channel = await connection.channel()
+    # The channel closes before the connection; the other way round RabbitMQ logs a client that "unexpectedly closed
+    # TCP connection".
+    async with connection, await connection.channel() as channel:
         queue = await channel.declare_queue(DEAD_QUEUE_NAME, passive=True)
         for _ in range(limit):
             message = await queue.get(no_ack=False, fail=False)
@@ -47,22 +48,28 @@ async def dlq_list(rabbitmq_url: str, *, limit: int) -> list[dict[str, Any]]:
     return items
 
 
-async def dlq_replay(rabbitmq_url: str, *, message_id: str | None, limit: int) -> int:
-    """Move dead letters back to payments.new with a fresh attempt counter."""
+async def dlq_replay(rabbitmq_url: str, *, message_id: str | None, limit: int) -> tuple[int, int]:
+    """Move dead letters back to payments.new with a fresh attempt counter.
+
+    A pass looks only at the messages in the queue when it starts, each at most once: one that fails again comes back
+    at the tail of the queue and waits for the next pass instead of being replayed over and over. Returns how many
+    were replayed and how many `limit` left in the queue.
+    """
     connection = await aio_pika.connect(rabbitmq_url)
     replayed = 0
-    async with connection:
-        # on_return_raises: an unroutable replay must fail before the dead letter is acked, not drop the message
-        channel = await connection.channel(publisher_confirms=True, on_return_raises=True)
+    # on_return_raises: an unroutable replay must fail before the dead letter is acked, not drop the message
+    async with connection, await connection.channel(publisher_confirms=True, on_return_raises=True) as channel:
         queue = await channel.declare_queue(DEAD_QUEUE_NAME, passive=True)
         exchange = await channel.get_exchange(PAYMENTS_EXCHANGE.name)
-        while replayed < limit:
+        present = queue.declaration_result.message_count or 0
+        budget = present if message_id is not None else min(present, limit)
+        for _ in range(budget):
             message = await queue.get(no_ack=False, fail=False)
             if message is None:
                 break
             if message_id is not None and message.message_id != message_id:
                 continue  # stays unacked, returns to the queue when the channel closes
-            headers = {k: v for k, v in _carry(message.headers or {}).items() if k not in _DEAD_LETTER_HEADERS}
+            headers = {k: v for k, v in carry_headers(message.headers or {}).items() if k not in _DEAD_LETTER_HEADERS}
             headers[ATTEMPT_HEADER] = 1
             headers["x-replayed-at"] = datetime.now(UTC).isoformat()
             await exchange.publish(
@@ -80,7 +87,7 @@ async def dlq_replay(rabbitmq_url: str, *, message_id: str | None, limit: int) -
             replayed += 1
             if message_id is not None:
                 break
-    return replayed
+    return replayed, present - budget
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -100,11 +107,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "list":
         print(json.dumps(asyncio.run(dlq_list(url, limit=args.limit)), indent=2, default=str))
     else:
-        count = asyncio.run(dlq_replay(url, message_id=args.message_id, limit=args.limit))
+        count, left = asyncio.run(dlq_replay(url, message_id=args.message_id, limit=args.limit))
         if args.message_id is not None and count == 0:
             print(f"no dead letter with message id {args.message_id}", file=sys.stderr)
             return 1
         print(f"replayed {count} message(s)")
+        if left:
+            print(f"--limit {args.limit} reached: {left} message(s) left in {DEAD_QUEUE_NAME}, run again for them")
     return 0
 
 

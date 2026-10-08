@@ -168,6 +168,10 @@ async def _dead_letters_at_least(url: str, count: int) -> bool:
     return (await queue_depths(url))["payments.dead"] >= count
 
 
+async def _retried_at_least(delay_ms: str, count: float) -> bool:
+    return sample("paystream_messages_retried_total", delay_ms=delay_ms) >= count
+
+
 @respx.mock
 async def test_end_to_end_success(db: Database, broker_settings: Settings) -> None:
     route = respx.post(HOOK).mock(return_value=httpx.Response(200))
@@ -207,6 +211,22 @@ async def test_webhook_retries_with_backoff_then_dead_letters(db: Database, brok
     assert sample("paystream_messages_dead_lettered_total", reason="max_attempts_exceeded") == dead_before + 1
     for delay, before in retried_before.items():  # one hop through each retry tier
         assert sample("paystream_messages_retried_total", delay_ms=delay) == before + 1
+
+
+async def test_database_outage_does_not_use_up_the_attempts(db: Database, broker_settings: Settings) -> None:
+    url = broker_settings.rabbitmq_url
+    ids = [await create_payment(db, webhook_url=None) for _ in range(3)]
+    parked_before = sample("paystream_messages_retried_total", delay_ms="600")  # the longest tier (settings fixture)
+    outage = broker_settings.model_copy(update={"database_url": "postgresql+asyncpg://x:x@127.0.0.1:1/x"})
+    async with TestApp(build_consumer(outage, gateway=AlwaysSucceeds())):
+        await publish_outbox(db, broker_settings)
+        # Three failed deliveries per event: the third would have dead-lettered it if each one spent an attempt.
+        await wait_for(lambda: _retried_at_least("600", parked_before + 3 * len(ids)))
+    assert (await queue_depths(url))["payments.dead"] == 0
+    async with TestApp(build_consumer(broker_settings, gateway=AlwaysSucceeds())):  # the database is back
+        for payment_id in ids:
+            await wait_for(lambda pid=payment_id: _is(db, pid, PaymentStatus.SUCCEEDED))
+    assert await queue_depths(url) == depths()
 
 
 @pytest.mark.parametrize(

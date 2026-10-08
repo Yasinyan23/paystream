@@ -31,10 +31,9 @@ async def require_api_key(request: Request, api_key: Annotated[str | None, Secur
 
 
 async def idempotency_key(
-    key: Annotated[str | None, Header(alias="Idempotency-Key", description="Unique key for safe retries")] = None,
+    # Required, so the OpenAPI document says so; a missing header becomes a 400 in the validation error handler.
+    key: Annotated[str, Header(alias="Idempotency-Key", description="Unique key for safe retries")],
 ) -> str:
-    if key is None:
-        raise ApiProblem(400, "idempotency-key-missing", "Idempotency-Key header is required")
     if not _IDEMPOTENCY_KEY.fullmatch(key):
         raise ApiProblem(
             400,

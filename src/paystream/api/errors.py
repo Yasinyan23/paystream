@@ -65,6 +65,10 @@ def install_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _validation(request: Request, exc: RequestValidationError) -> JSONResponse:
+        if any(e["type"] == "missing" and tuple(e["loc"]) == ("header", "Idempotency-Key") for e in exc.errors()):
+            return problem_response(
+                request, status=400, slug="idempotency-key-missing", title="Idempotency-Key header is required"
+            )
         # The rejected `input` is not echoed: client data of any shape (NaN, lone surrogates, deep nesting) must not
         # decide whether the 422 can be rendered (Starlette's JSONResponse refuses NaN, cannot encode surrogates).
         errors = [{key: value for key, value in error.items() if key != "input"} for error in exc.errors()]
