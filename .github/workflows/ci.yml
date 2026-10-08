@@ -9,15 +9,17 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A newer push to a pull request supersedes the run; runs on main all finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0  # no major tags since v8: a release, pinned
         with:
           enable-cache: true
       - run: uv sync --locked
@@ -27,25 +29,28 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0  # no major tags since v8: a release, pinned
         with:
           enable-cache: true
       - run: uv sync --locked
       - name: Unit and integration tests (testcontainers)
         run: uv run pytest --cov=paystream --cov-report=xml --cov-report=term-missing --cov-fail-under=90
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}  # the coverage of a failing run too
         with:
           name: coverage
           path: coverage.xml
 
   e2e:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     needs: [lint, test]
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0  # no major tags since v8: a release, pinned
         with:
           enable-cache: true
       - run: uv sync --locked
