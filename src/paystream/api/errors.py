@@ -6,9 +6,11 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DBAPIError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from paystream.api.middleware import request_id_ctx
+from paystream.db.database import database_unavailable
 from paystream.domain.errors import IdempotencyKeyReusedError
 
 logger = logging.getLogger(__name__)
@@ -96,6 +98,22 @@ def install_error_handlers(app: FastAPI) -> None:
             title=str(exc.detail),
             headers=exc.headers,
         )
+
+    async def _database_down(request: Request, exc: Exception) -> JSONResponse:
+        if not database_unavailable(exc):
+            raise exc  # the database answered and rejected a statement: a bug, for the 500 handler below
+        logger.warning("database unavailable on %s %s: %s", request.method, request.url.path, exc)
+        return problem_response(
+            request,
+            status=503,
+            slug="service-unavailable",
+            title="Service unavailable",
+            detail="Database is not reachable",
+            headers={"Retry-After": "5"},
+        )
+
+    for family in (OSError, DBAPIError):  # what database_unavailable looks at
+        app.add_exception_handler(family, _database_down)
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:

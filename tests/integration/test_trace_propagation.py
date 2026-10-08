@@ -67,6 +67,17 @@ async def test_outbox_row_carries_the_request_trace(client: AsyncClient, db: Dat
     assert event.headers["traceparent"].split("-")[1] == trace_id
 
 
+async def test_client_baggage_stays_out_of_the_outbox(client: AsyncClient, db: Database) -> None:
+    # Up to 8 KB of whatever the client sends, which would ride along in every outbox row and AMQP message.
+    headers = {"Idempotency-Key": "trace-3", "baggage": "user=alice,plan=gold"}
+    response = await client.post("/api/v1/payments", json={"amount": "1.00", "currency": "EUR"}, headers=headers)
+    payment_id = UUID(response.json()["payment_id"])
+    async with db.sessionmaker() as session:
+        event = await session.scalar(select(OutboxEvent).where(OutboxEvent.aggregate_id == payment_id))
+    assert event is not None
+    assert "baggage" not in event.headers
+
+
 @respx.mock
 async def test_the_trace_runs_from_the_api_to_the_webhook(
     client: AsyncClient, settings: Settings, rabbitmq_url: str, instrumented: None, spans: InMemorySpanExporter

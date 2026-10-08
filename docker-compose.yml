@@ -87,10 +87,13 @@ services:
   outbox-relay:
     <<: *app
     command: ["python", "-m", "paystream.workers.relay"]
+    # Docker kills 10 s after SIGTERM by default; work in flight gets the broker's 30 s graceful timeout, plus a margin.
+    stop_grace_period: 35s
 
   consumer:
     <<: *app
     command: ["python", "-m", "paystream.workers.consumer"]
+    stop_grace_period: 35s
 
   webhook-sink:
     build: .
@@ -115,7 +118,7 @@ services:
     profiles: [observability]
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Editor
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/paystream.json
     volumes:

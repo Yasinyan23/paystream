@@ -186,6 +186,26 @@ async def test_error_body_is_read_only_up_to_the_cap() -> None:
     assert served <= 3  # and the receiver's stream is abandoned at the cap, not drained
 
 
+@pytest.mark.parametrize(("chunks", "drained"), [(1, True), (40_960, False)], ids=["short", "20-mb"])
+@respx.mock
+async def test_success_body_is_read_to_its_end_or_up_to_the_cap(chunks: int, drained: bool) -> None:
+    served, finished = 0, False
+
+    async def body() -> AsyncIterator[bytes]:
+        nonlocal served, finished
+        for _ in range(chunks):
+            served += 1
+            yield b"x" * 512
+        finished = True  # only reached when the reader asks for more after the last chunk
+
+    respx.post("https://hooks.test/pay").mock(return_value=httpx.Response(200, content=body()))
+    async with httpx.AsyncClient() as client:
+        result = await make_sender(client).deliver("https://hooks.test/pay", event_id="evt_1", payload={})
+    assert (result.ok, result.status_code) == (True, 200)
+    assert finished is drained  # a short body is read to its end, so the connection can go back to the pool
+    assert served <= 3  # a long one is abandoned at the cap
+
+
 @respx.mock
 async def test_error_text_never_contains_nul() -> None:
     respx.post("https://hooks.test/pay").mock(return_value=httpx.Response(500, content=b"bad\x00gateway"))

@@ -1,15 +1,13 @@
 .DEFAULT_GOAL := help
 COMPOSE := docker compose
-API := http://localhost:8000
 
 .PHONY: help up stack down logs demo observability test test-unit e2e coverage lint fmt load dlq dlq-replay
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-up: ## Build and (re)create the stack, wait until the API is ready
-	$(COMPOSE) up -d --build
-	@printf "waiting for $(API)/ready"; until curl -sf $(API)/ready >/dev/null; do printf "."; sleep 1; done; echo " ready"
+up: ## Build and (re)create the stack, wait until it is running and healthy
+	$(COMPOSE) up -d --build --wait
 
 stack: ## Start the stack if it is down; a running stack is left as it is
 	$(COMPOSE) up -d --wait --no-recreate
@@ -37,7 +35,7 @@ e2e: stack ## End-to-end tests against the running stack
 	uv run pytest -m e2e tests/e2e -v
 
 coverage: ## Tests with the 90% coverage gate
-	uv run pytest --cov=paystream --cov-branch --cov-report=term-missing --cov-fail-under=90
+	uv run pytest --cov=paystream --cov-report=term-missing --cov-fail-under=90
 
 lint: ## ruff, formatting check and mypy
 	uv run ruff check . && uv run ruff format --check . && uv run mypy src

@@ -10,6 +10,7 @@ from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from paystream import __version__
 from paystream.core.config import Settings
@@ -46,8 +47,12 @@ def instrument_database(db: Database) -> None:
 
 
 def inject_trace_headers(carrier: dict[str, str]) -> dict[str, str]:
-    """Add W3C `traceparent`/`tracestate` for the current span, if any."""
-    propagate.inject(carrier)
+    """Add W3C `traceparent`/`tracestate` for the current span, if any.
+
+    The trace context only: the global propagator would add the client's `baggage` too, up to 8 KB of it in every
+    outbox row and message.
+    """
+    TraceContextTextMapPropagator().inject(carrier)
     return carrier
 
 

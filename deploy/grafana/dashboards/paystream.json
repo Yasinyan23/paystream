@@ -66,7 +66,7 @@
       "gridPos": { "x": 0, "y": 21, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "unit": "s" } },
-      "targets": [{ "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, route) (rate(paystream_http_request_seconds_bucket[5m])))", "legendFormat": "{{route}}" }]
+      "targets": [{ "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, route) (rate(paystream_http_request_seconds_bucket{route=~\"/api/.*\"}[5m])))", "legendFormat": "{{route}}" }]
     },
     {
       "id": 10, "type": "timeseries", "title": "RabbitMQ queue depth",

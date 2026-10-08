@@ -21,6 +21,9 @@ def configure_logging(service: str, *, json_logs: bool = True, level: str = "INF
     """
     shared: list[Processor] = [
         structlog.contextvars.merge_contextvars,
+        # FastStream logs Received/Processed outside our handler, with the message id in `extra`. Only that key:
+        # uvicorn's `extra` holds an ANSI-colored copy of its banner lines.
+        structlog.stdlib.ExtraAdder(allow=("message_id",)),
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
@@ -50,3 +53,4 @@ def configure_logging(service: str, *, json_logs: bool = True, level: str = "INF
         named: logging.Logger = logging.getLogger(name)
         named.handlers.clear()
         named.propagate = True
+        named.setLevel(logging.NOTSET)  # their own setup pins INFO; LOG_LEVEL decides

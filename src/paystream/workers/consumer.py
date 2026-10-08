@@ -78,8 +78,8 @@ async def handle_delivery(
     data = body.get("data") if isinstance(body, dict) else None
     payment_id = data.get("payment_id") if isinstance(data, dict) else None
     # Every log line of this delivery carries these. Contextvars are per task and aio-pika runs each delivery in
-    # its own, so concurrent messages keep their own context.
-    structlog.contextvars.bind_contextvars(message_id=message.message_id)
+    # its own, so concurrent messages keep their own context. The correlation id is the API request's X-Request-ID.
+    structlog.contextvars.bind_contextvars(message_id=message.message_id, correlation_id=message.correlation_id)
     if payment_id:
         structlog.contextvars.bind_contextvars(payment_id=payment_id)
     try:
@@ -122,7 +122,7 @@ async def handle_delivery(
     else:
         await message.ack()
     finally:
-        structlog.contextvars.unbind_contextvars("message_id", "attempt", "payment_id")
+        structlog.contextvars.unbind_contextvars("message_id", "correlation_id", "attempt", "payment_id")
 
 
 def build_consumer(

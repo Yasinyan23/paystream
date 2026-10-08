@@ -1,10 +1,13 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.exc import IntegrityError
 
 from paystream.api.app import create_app
 from paystream.core.config import Settings
+from tests.conftest import API_KEY
 
 pytestmark = pytest.mark.integration
+DATABASE_DOWN = "postgresql+asyncpg://x:x@127.0.0.1:1/x"
 
 
 async def test_health(client: AsyncClient) -> None:
@@ -20,13 +23,26 @@ async def test_ready_checks_database(client: AsyncClient) -> None:
 
 
 async def test_ready_is_503_when_database_is_down(settings: Settings) -> None:
-    app = create_app(settings.model_copy(update={"database_url": "postgresql+asyncpg://x:x@127.0.0.1:1/x"}))
+    app = create_app(settings.model_copy(update={"database_url": DATABASE_DOWN}))
     async with (
         app.router.lifespan_context(app),
         AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http,
     ):
         response = await http.get("/ready")
     assert response.status_code == 503
+    assert response.json()["type"] == "urn:paystream:problem:service-unavailable"
+
+
+async def test_requests_are_503_with_retry_after_when_database_is_down(settings: Settings) -> None:
+    app = create_app(settings.model_copy(update={"database_url": DATABASE_DOWN}))
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers={"X-API-Key": API_KEY}) as http,
+    ):
+        body = {"amount": "1.00", "currency": "EUR"}
+        response = await http.post("/api/v1/payments", json=body, headers={"Idempotency-Key": "down-1"})
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
     assert response.json()["type"] == "urn:paystream:problem:service-unavailable"
 
 
@@ -66,12 +82,17 @@ async def test_unknown_route_is_problem_details(client: AsyncClient) -> None:
     assert response.json()["type"] == "urn:paystream:problem:not-found"
 
 
-async def test_unhandled_error_is_problem_details_with_request_id(settings: Settings) -> None:
+@pytest.mark.parametrize(
+    "error",
+    [RuntimeError("boom"), IntegrityError("INSERT", None, Exception("duplicate key"))],
+    ids=["bug", "statement-rejected-by-the-database"],  # the database answered: a 500, not an outage's 503
+)
+async def test_unhandled_error_is_problem_details_with_request_id(settings: Settings, error: Exception) -> None:
     app = create_app(settings)
 
     @app.get("/boom")
     async def boom() -> None:
-        raise RuntimeError("boom")
+        raise error
 
     transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test") as http:

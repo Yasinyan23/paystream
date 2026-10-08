@@ -56,12 +56,27 @@ def test_stdlib_logs_become_json_with_context(capsys: pytest.CaptureFixture[str]
 
 
 def test_level_filtering(capsys: pytest.CaptureFixture[str]) -> None:
+    logging.getLogger("uvicorn.access").setLevel(logging.INFO)  # as uvicorn's own logging config leaves it
     configure_logging("api", json_logs=True, level="WARNING")
     logging.getLogger("paystream.test").info("hidden")
+    logging.getLogger("uvicorn.access").info("hidden access line")
     logging.getLogger("paystream.test").warning("shown")
     out = capsys.readouterr().out
     assert "hidden" not in out
     assert "shown" in out
+
+
+def test_faststream_lines_carry_the_message_id(capsys: pytest.CaptureFixture[str]) -> None:
+    configure_logging("consumer", json_logs=True, level="INFO")
+    # FastStream logs Received/Processed outside the handler, with the message's context as `extra`.
+    extra = {"queue": "payments.new", "exchange": "payments", "message_id": "m-1"}
+    logging.getLogger("paystream.broker").info("Received", extra=extra)
+    # uvicorn puts an ANSI-colored copy of its banner lines in `extra`: not for JSON.
+    banner = {"color_message": "Started server process [\x1b[36m%d\x1b[0m]"}
+    logging.getLogger("uvicorn.error").info("Started server process [%d]", 7, extra=banner)
+    records = logged(capsys)
+    assert records["Received"]["message_id"] == "m-1"
+    assert "color_message" not in records["Started server process [7]"]
 
 
 def test_console_output_when_json_is_off(capsys: pytest.CaptureFixture[str]) -> None:
@@ -115,7 +130,7 @@ async def test_consumer_lines_carry_the_message_context_only_during_the_delivery
         "data": {"payment_id": "p-1"},
     }
     message = SimpleNamespace(
-        headers={"x-attempt": 2}, message_id="m-1", correlation_id=None, ack=AsyncMock(), reject=AsyncMock()
+        headers={"x-attempt": 2}, message_id="m-1", correlation_id="req-1", ack=AsyncMock(), reject=AsyncMock()
     )
 
     await handle_delivery(SimpleNamespace(process=AsyncMock()), None, body=body, message=message)
@@ -123,4 +138,6 @@ async def test_consumer_lines_carry_the_message_context_only_during_the_delivery
     message.ack.assert_awaited_once()
     record = logged(capsys)["message m-1 attempt 2 processed"]
     assert (record["message_id"], record["payment_id"], record["attempt"]) == ("m-1", "p-1", 2)
-    assert structlog.contextvars.get_contextvars().keys().isdisjoint({"message_id", "payment_id", "attempt"})
+    assert record["correlation_id"] == "req-1"  # the API request id, forwarded by the relay
+    context = structlog.contextvars.get_contextvars().keys()
+    assert context.isdisjoint({"message_id", "correlation_id", "payment_id", "attempt"})

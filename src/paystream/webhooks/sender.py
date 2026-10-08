@@ -86,9 +86,10 @@ class WebhookSender:
                 }
                 try:
                     async with self._client.stream("POST", url, content=body, headers=headers) as response:
+                        # Read for a 2xx too: a short body read to its end lets the connection go back to the pool.
+                        excerpt = await _read_excerpt(response)
                         if response.is_success:
                             return result(True, response.status_code, None)
-                        excerpt = await _read_excerpt(response)
                         return result(False, response.status_code, f"HTTP {response.status_code}: {excerpt}")
                 except httpx.HTTPError as exc:
                     return result(False, None, f"{type(exc).__name__}: {exc}")
