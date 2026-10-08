@@ -81,3 +81,13 @@ markers = [
     "e2e: runs against a live docker compose stack",
 ]
 filterwarnings = ["ignore::DeprecationWarning:testcontainers.*"]
+
+[tool.coverage.run]
+source = ["paystream"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# `...$`, not `...`: unanchored it also matches `tuple[Event, ...]` in a signature and hides that whole function.
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "\\.\\.\\.$"]
