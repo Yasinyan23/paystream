@@ -1,10 +1,15 @@
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import Mock
 from uuid import uuid7
 
 import pytest
 from pydantic import ValidationError
 
+from paystream.api import schemas
 from paystream.api.schemas import PaymentCreateRequest, PaymentDetail
 from paystream.db.models import Payment
 from paystream.domain.payment import Currency, PaymentStatus
@@ -42,6 +47,25 @@ def test_same_payment_in_different_forms_has_same_fingerprint_payload() -> None:
 def test_invalid_bodies_are_rejected(body: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         PaymentCreateRequest.model_validate(body)
+
+
+def nested(levels: int) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for _ in range(levels - 1):
+        value = {"a": value}
+    return value
+
+
+def test_metadata_depth_is_checked_before_the_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    # json.dumps recurses on the C stack: far beyond the depth limit it raises RecursionError, not ValueError, and
+    # how far depends on the build. Deep metadata must be refused before it ever gets there.
+    dumps = Mock(wraps=json.dumps)
+    monkeypatch.setattr(schemas, "json", SimpleNamespace(dumps=dumps))
+    PaymentCreateRequest.model_validate({"amount": 1, "currency": "RUB", "metadata": nested(32)})
+    assert dumps.call_count == 1  # the spy is in place: metadata within the limit is serialized to measure it
+    with pytest.raises(ValidationError, match="at most 32 levels"):
+        PaymentCreateRequest.model_validate({"amount": 1, "currency": "RUB", "metadata": nested(33)})
+    assert dumps.call_count == 1
 
 
 @pytest.mark.parametrize(

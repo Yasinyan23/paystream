@@ -47,8 +47,6 @@ NON_STORABLE = [
     pytest.param('{"amount":"1e-10000000","currency":"RUB"}', id="amount-rounding-to-zero"),
     pytest.param(raw_payment('"metadata":' + '{"a":' * 40 + "1" + "}" * 40), id="metadata-40-levels-deep"),
     pytest.param(raw_payment('"metadata":' + '{"a":' * 5000 + "1" + "}" * 5000), id="metadata-5000-levels-deep"),
-    # With the default 8 MB stack json.loads accepts ~43k levels and json.dumps raises RecursionError above ~25k
-    pytest.param(raw_payment('"metadata":' + '{"a":' * 30_000 + "1" + "}" * 30_000), id="metadata-30000-levels-deep"),
 ]
 
 

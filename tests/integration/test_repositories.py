@@ -109,7 +109,8 @@ async def test_claim_skips_rows_locked_by_another_relay(db: Database) -> None:
     async with db.sessionmaker() as first, first.begin():
         assert len(await OutboxRepository(first).claim_due(10)) == 1
         async with db.sessionmaker() as second, second.begin():
-            assert await OutboxRepository(second).claim_due(10) == []
+            async with asyncio.timeout(5):  # a claim that waited for the lock would hang here forever
+                assert await OutboxRepository(second).claim_due(10) == []
 
 
 async def test_delete_published_before(db: Database) -> None:

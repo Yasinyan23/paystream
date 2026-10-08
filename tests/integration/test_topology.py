@@ -4,7 +4,7 @@ import pytest
 from paystream.core.config import Settings
 from paystream.messaging.broker import build_broker
 from paystream.messaging.publisher import publish_json
-from paystream.messaging.topology import PAYMENT_CREATED_KEY, PAYMENTS_EXCHANGE, declare_topology
+from paystream.messaging.topology import PAYMENT_CREATED_KEY, PAYMENTS_EXCHANGE, declare_topology, payments_queue
 
 pytestmark = pytest.mark.integration
 
@@ -32,6 +32,8 @@ async def test_publish_is_routed_to_payments_new(settings: Settings, rabbitmq_ur
     await broker.connect()
     try:
         await declare_topology(broker, settings)
+        # The message is read back as the first in the queue: anything another module left there goes first.
+        await (await broker.declare_queue(payments_queue(settings.delivery_limit))).purge()
         await publish_json(
             broker,
             {"hello": "world"},

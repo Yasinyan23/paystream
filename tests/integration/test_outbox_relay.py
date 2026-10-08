@@ -6,7 +6,7 @@ from uuid import uuid7
 import aio_pika
 import pytest
 from faststream.rabbit import RabbitBroker
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from paystream.core.config import Settings
 from paystream.db.database import Database
@@ -14,7 +14,7 @@ from paystream.db.models import OutboxEvent
 from paystream.domain.payment import OutboxStatus
 from paystream.messaging.broker import build_broker
 from paystream.messaging.topology import declare_topology
-from paystream.repositories.outbox import OutboxRepository
+from paystream.repositories.outbox import OUTBOX_NOTIFY_CHANNEL, OutboxRepository
 from paystream.services.outbox_relay import OutboxRelay
 from paystream.workers.relay import run_relay
 from tests.conftest import sample
@@ -129,14 +129,29 @@ async def test_purge_published(db: Database, broker: RabbitBroker, rabbitmq_url:
     assert await relay.purge_published(older_than=timedelta(seconds=-1)) == 1
 
 
+async def listening(db: Database) -> bool:
+    """Some session's last statement was the relay's LISTEN; it runs once the relay is connected to RabbitMQ too."""
+    async with db.engine.connect() as connection:
+        statement = text("SELECT count(*) FROM pg_stat_activity WHERE query = :listen")
+        return bool(await connection.scalar(statement, {"listen": f'LISTEN "{OUTBOX_NOTIFY_CHANNEL}"'}))
+
+
 async def test_run_relay_wakes_up_on_notify(db: Database, settings: Settings, rabbitmq_url: str) -> None:
     settings = settings.model_copy(update={"rabbitmq_url": rabbitmq_url, "outbox_poll_interval": 30.0})
     stop = asyncio.Event()
     task = asyncio.create_task(run_relay(settings, stop))
-    await asyncio.sleep(1.0)  # let it connect and LISTEN
-    await purge_queue(rabbitmq_url)
-    events = await add_events(db, 1, notify=True)
-    ids = await asyncio.wait_for(queued_message_ids(rabbitmq_url, 1), timeout=5)
-    stop.set()
-    await asyncio.wait_for(task, timeout=10)
+    try:  # whatever fails, no relay may outlive the test in the session's event loop
+        async with asyncio.timeout(10):
+            while True:
+                if await listening(db):
+                    break
+                await asyncio.sleep(0.05)
+        await purge_queue(rabbitmq_url)
+        await add_events(db, 1, notify=True)  # the relay's first pass over the outbox, right after LISTEN, may take it
+        await asyncio.wait_for(queued_message_ids(rabbitmq_url, 1), timeout=5)
+        events = await add_events(db, 1, notify=True)  # that pass is over: only the NOTIFY can beat the 30 s poll
+        ids = await asyncio.wait_for(queued_message_ids(rabbitmq_url, 1), timeout=5)
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=10)
     assert ids == [str(events[0].id)]

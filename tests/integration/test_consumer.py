@@ -237,8 +237,10 @@ async def test_database_outage_does_not_use_up_the_attempts(db: Database, broker
         (b"[1, 2, 3]", None),
         (b"{not json", "application/json"),  # claims to be JSON: FastStream's own decoder raises before our handler
         (b"\xff\xfe", "text/plain"),  # claims to be text: so does its decoder
-        (b"[" * 100_000, None),  # json.loads dies with a RecursionError, which nobody upstream catches either
-        (b"[" * 100_000, "application/json"),
+        # json.loads dies with a RecursionError, which nobody upstream catches either; a million levels are too deep
+        # for any CPython build's stack.
+        (b"[" * 1_000_000, None),
+        (b"[" * 1_000_000, "application/json"),
     ],
     ids=[
         "not-an-event",
