@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320" role="img" aria-labelledby="t d">
+  <title id="t">paystream</title>
+  <desc id="d">Reliable asynchronous payment processing: API, transactional outbox, RabbitMQ, idempotent consumer, signed webhooks.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1117"/>
+      <stop offset="1" stop-color="#161b2e"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#a78bfa"/>
+      <stop offset="1" stop-color="#2dd4bf"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#5eead4"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1280" height="320" rx="24" fill="url(#bg)"/>
+  <rect x="1" y="1" width="1278" height="318" rx="23" fill="none" stroke="#30363d"/>
+  <text x="64" y="118" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="72" font-weight="800" fill="url(#accent)" letter-spacing="-1">paystream</text>
+  <text x="66" y="160" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="24" fill="#c9d1d9">Reliable asynchronous payment processing · the transactional outbox, done right</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="18" fill="#e6edf3" text-anchor="middle">
+    <g>
+      <rect x="64" y="208" width="168" height="56" rx="12" fill="#1f2937" stroke="#a78bfa"/>
+      <text x="148" y="242">API</text>
+    </g>
+    <line x1="236" y1="236" x2="296" y2="236" stroke="#5eead4" stroke-width="2" marker-end="url(#arrow)"/>
+    <g>
+      <rect x="300" y="208" width="188" height="56" rx="12" fill="#1f2937" stroke="#9f8cf6"/>
+      <text x="394" y="242">outbox · PG</text>
+    </g>
+    <line x1="492" y1="236" x2="552" y2="236" stroke="#5eead4" stroke-width="2" marker-end="url(#arrow)"/>
+    <g>
+      <rect x="556" y="208" width="168" height="56" rx="12" fill="#1f2937" stroke="#7fa8e8"/>
+      <text x="640" y="242">RabbitMQ</text>
+    </g>
+    <line x1="728" y1="236" x2="788" y2="236" stroke="#5eead4" stroke-width="2" marker-end="url(#arrow)"/>
+    <g>
+      <rect x="792" y="208" width="168" height="56" rx="12" fill="#1f2937" stroke="#4fc6d6"/>
+      <text x="876" y="242">consumer</text>
+    </g>
+    <line x1="964" y1="236" x2="1024" y2="236" stroke="#5eead4" stroke-width="2" marker-end="url(#arrow)"/>
+    <g>
+      <rect x="1028" y="208" width="188" height="56" rx="12" fill="#1f2937" stroke="#2dd4bf"/>
+      <text x="1122" y="242">signed webhook</text>
+    </g>
+  </g>
+</svg>
