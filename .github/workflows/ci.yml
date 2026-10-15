@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.2.0  # no major tags since v8: a release, pinned
+      - uses: astral-sh/setup-uv@v10.3.0  # no major tags since v8: a release, pinned
         with:
           enable-cache: true
       - run: uv sync --locked
@@ -32,7 +32,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.2.0  # no major tags since v8: a release, pinned
+      - uses: astral-sh/setup-uv@v10.3.0  # no major tags since v8: a release, pinned
         with:
           enable-cache: true
       - run: uv sync --locked
@@ -50,7 +50,7 @@ jobs:
     needs: [lint, test]
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.2.0  # no major tags since v8: a release, pinned
+      - uses: astral-sh/setup-uv@v10.3.0  # no major tags since v8: a release, pinned
         with:
           enable-cache: true
       - run: uv sync --locked
